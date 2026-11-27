@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
-import { useChat, parseFrame } from './useChat';
+import { useChat, parseFrame, newSessionId } from './useChat';
+import { setPageContext } from '@/lib/chat-page-context';
 
 // Mock localStorage
 const localStorageMock = (() => {
@@ -16,6 +17,20 @@ const localStorageMock = (() => {
 Object.defineProperty(global, 'localStorage', { value: localStorageMock });
 
 describe('useChat hook and parseFrame', () => {
+  it('uses cryptographic randomness even without randomUUID', () => {
+    const random = vi.spyOn(Math, 'random').mockImplementation(() => { throw new Error('insecure'); });
+    const original = globalThis.crypto;
+    vi.stubGlobal('crypto', { getRandomValues: original.getRandomValues.bind(original) });
+    try {
+      const first = newSessionId();
+      expect(first).toMatch(/^[a-f0-9]{36}$/);
+      expect(newSessionId()).not.toBe(first);
+      expect(random).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+      random.mockRestore();
+    }
+  });
   it('handles event: status and extracts phase and elapsedMs', () => {
     const frame = 'event: status\ndata: {"phase":"working","elapsedMs":3000}\n\n';
     const parsed = parseFrame(frame);
@@ -108,5 +123,94 @@ describe('useChat hook and parseFrame', () => {
     });
 
     fetchSpy.mockRestore();
+  });
+});
+
+// `meta.gateways` is an untrusted shape both in persisted history and on the live SSE meta frame:
+// only a non-empty string array is kept; anything else becomes undefined (no card, no crash).
+describe('gateways provenance (asGateways)', () => {
+  const VALID = ['network', 'security'];
+  const INVALID: [string, unknown][] = [
+    ['a non-array', 'network'],
+    ['a mixed array', ['network', 7]],
+    ['a missing value', undefined],
+  ];
+
+  function assistantRow(gateways: unknown) {
+    const meta: Record<string, unknown> = { tools: ['t'] };
+    if (gateways !== undefined) meta.gateways = gateways;
+    return { role: 'assistant', content: 'a', gateway: 'network', meta };
+  }
+
+  async function loadHistory(gateways: unknown) {
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        thread: { id: 'th1', sessionId: 'sess1' },
+        messages: [{ role: 'user', content: 'q', gateway: null, meta: null }, assistantRow(gateways)],
+      }),
+    } as any);
+    const { result } = renderHook(() => useChat());
+    await act(async () => { await result.current.selectThread('th1'); });
+    fetchSpy.mockRestore();
+    return result.current.msgs[1];
+  }
+
+  async function streamMeta(gateways: unknown) {
+    const meta: Record<string, unknown> = { tools: ['t'] };
+    if (gateways !== undefined) meta.gateways = gateways;
+    const frames = `data: {"delta":"hi"}\n\nevent: meta\ndata: ${JSON.stringify(meta)}\n\n`;
+    const read = vi.fn()
+      .mockResolvedValueOnce({ done: false, value: new TextEncoder().encode(frames) })
+      .mockResolvedValue({ done: true });
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue({
+      ok: true, body: { getReader: () => ({ read }) },
+    } as any);
+    const { result } = renderHook(() => useChat());
+    await act(async () => { await result.current.send('q'); });
+    fetchSpy.mockRestore();
+    return result.current.msgs[1];
+  }
+
+  it('history load keeps a string array', async () => {
+    expect((await loadHistory(VALID)).gateways).toEqual(VALID);
+  });
+  it.each(INVALID)('history load maps %s to undefined', async (_label, value) => {
+    const msg = await loadHistory(value);
+    expect(msg.tools).toEqual(['t']); // the row itself still loads
+    expect(msg.gateways).toBeUndefined();
+  });
+  it('live SSE meta keeps a string array', async () => {
+    expect((await streamMeta(VALID)).gateways).toEqual(VALID);
+  });
+  it.each(INVALID)('live SSE meta maps %s to undefined', async (_label, value) => {
+    const msg = await streamMeta(value);
+    expect(msg.tools).toEqual(['t']);
+    expect(msg.gateways).toBeUndefined();
+  });
+});
+
+describe('page context in the request body', () => {
+  async function sentBody(): Promise<Record<string, unknown>> {
+    const read = vi.fn().mockResolvedValue({ done: true });
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue({ ok: true, body: { getReader: () => ({ read }) } } as any);
+    try {
+      const { result } = renderHook(() => useChat());
+      await act(async () => { await result.current.send('q'); });
+      return JSON.parse(String((fetchSpy.mock.calls[0][1] as RequestInit).body));
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  }
+
+  it('carries pageContext only while a page has set it', async () => {
+    expect(await sentBody()).not.toHaveProperty('pageContext');
+    setPageContext('Site flow for shop.example.test');
+    try {
+      expect((await sentBody()).pageContext).toBe('Site flow for shop.example.test');
+    } finally {
+      setPageContext(null);
+    }
+    expect(await sentBody()).not.toHaveProperty('pageContext');
   });
 });

@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f44dca1c6fd4 · generated-at: 2026-09-15 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: eaf2143a5595 · generated-at: 2026-11-04 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -11,9 +11,9 @@ parameter.
 
 ## Build · Test
 ```bash
-cd agent && python3 -m pytest test_agent.py test_readiness.py -q
+cd agent && python3 -m pytest test_agent.py test_readiness.py test_pinned_http.py -q
 ```
-Docker image must be arm64 (`docker buildx --platform linux/arm64`), Python 3.11-slim,
+Docker image must be arm64 (`docker buildx --platform linux/arm64`), Python 3.14-slim,
 port 8080.
 
 `fixtures/*-contract.json` binds web adapter tests and disposable PostgreSQL
@@ -32,7 +32,7 @@ distinct from query errors.
 - Workload inventory reads go through MCP tools. The bounded readiness probe directly
   checks execution identity and model permission without sending inventory to the model.
 - The gateway/tool inventory and the chat routing-key list are **not** hand-maintained in this
-  module's docs (they've drifted stale there before) — the actual sources are
+  module's docs — the actual sources are
   `scripts/v2/agentcore/catalog.py` (provisioner catalog), `ai.tf`'s `local.agent_lambdas`, and
   `web/lib/route.ts`'s `RULES`.
 - The system prompt is role-specific, one per domain gateway.

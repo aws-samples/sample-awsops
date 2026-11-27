@@ -77,7 +77,7 @@ describe('POST /api/incidents/webhook — flag OFF (BINDING: no autonomous accep
   });
 });
 
-describe('POST /api/incidents/webhook — HMAC (ADR-022 active/standby)', () => {
+describe('POST /api/incidents/webhook — HMAC (ADR-013[legacy 022] active/standby)', () => {
   it('401 on a bad signature (flag on)', async () => {
     const { POST } = await import('./route');
     const res = await POST(post(ALERT, { 'x-webhook-signature': 'sha256=deadbeef' }));
@@ -102,7 +102,7 @@ describe('POST /api/incidents/webhook — HMAC (ADR-022 active/standby)', () => 
     expect(enqueueInitialStage).toHaveBeenCalledWith('inc-1');
   });
 
-  it('accepts the standby secret (ADR-022 rotation) — 202', async () => {
+  it('accepts the standby secret (ADR-013[legacy 022] rotation) — 202', async () => {
     const STANDBY = 'standby-secret-key';
     process.env.SSM_INCIDENT_HMAC_STANDBY_PARAM = '/ops/awsops-v2/incident/webhook-hmac-standby';
     ssmSend.mockImplementation((cmd: { input?: { Name?: string } }) => {
@@ -127,7 +127,7 @@ describe('POST /api/incidents/webhook — HMAC (ADR-022 active/standby)', () => 
   });
 });
 
-describe('POST /api/incidents/webhook — ADR-034 marker-drop (ALWAYS-ON, independent of write-back flag)', () => {
+describe('POST /api/incidents/webhook — ADR-006[legacy 034] marker-drop (ALWAYS-ON, independent of write-back flag)', () => {
   // A self-write-back-marked generic alert (CreatedBy=AWSops-AIOps in labels).
   const SELF = JSON.stringify({ title: 'HighCPU', severity: 'critical', source: 'generic', message: 'cpu high', labels: { service: 'api', CreatedBy: 'AWSops-AIOps' } });
 
@@ -195,7 +195,19 @@ describe('POST /api/incidents/webhook — rate limit + SNS confirm', () => {
     const res = await POST(post(body, { 'x-forwarded-for': '10.0.0.50, 198.51.100.7' }));
     expect(res.status).toBe(200);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect((fetchSpy.mock.calls[0][1] as RequestInit).signal).toBeInstanceOf(AbortSignal); // bounded confirm fetch
     expect(triageAndCreateOrLink).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+
+  it('SubscriptionConfirmation fetch timeout/abort → 400 so SNS retries', async () => {
+    verifySnsMessage.mockResolvedValue({ ok: true });
+    dbQuery.mockResolvedValue({ rows: [{ source_allowlist: ['arn:aws:sns:ap-northeast-2:1:t'] }] });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new DOMException('timed out', 'TimeoutError'));
+    const body = JSON.stringify({ Type: 'SubscriptionConfirmation', TopicArn: 'arn:aws:sns:ap-northeast-2:1:t', SubscribeURL: 'https://sns.ap-northeast-2.amazonaws.com/?Action=ConfirmSubscription' });
+    const { POST } = await import('./route');
+    const res = await POST(post(body, { 'x-forwarded-for': '10.0.0.51, 198.51.100.7' }));
+    expect(res.status).toBe(400);
     fetchSpy.mockRestore();
   });
 

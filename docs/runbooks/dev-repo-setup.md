@@ -118,8 +118,8 @@ the dev-tier roles above.
 #### Review CI protection and recovery
 
 For changed HEAD images, install the separately hash-pinned codec and verify the approved
-runner's Codex image attachment and Claude Read capabilities as described in
-[HEAD image evidence](pr-review-head-images.md). Missing capability or authentication
+runner's image decoding and Claude Read capabilities as described in
+[Claude Code review on Amazon Bedrock](pr-review-head-images.md). Missing capability or authentication
 requires correction through the existing runner/review setup, never a coverage waiver.
 
 Recovery approval is enforced by GitHub environments, outside PR-controlled code. A
@@ -316,27 +316,7 @@ gh pr list -R aws-samples/sample-awsops --state all --label "ci-review:$REVIEW_H
 # gh label delete "ci-review:$REVIEW_HEAD" -R aws-samples/sample-awsops --yes
 ```
 
-Automatic CI code is selected from immutable `github.sha`, while the panel and chair read source
-context from a separate target-base worktree. Since **2025-12-08**, `pull_request_target`
-uses the default branch for its workflow, `GITHUB_REF`, and `GITHUB_SHA` regardless of PR
-target. See [GitHub's platform announcement](https://github.blog/changelog/2025-11-07-actions-pull_request_target-and-environment-branch-protections-changes/),
-[environment protection rules](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments), and
-[immutable OIDC subjects](https://docs.github.com/en/actions/reference/security/oidc).
-The workflow gives Codex and Claude one independent comprehensive review each,
-covering L2–L5, with at most two 1200-second attempts per vendor. Each report must
-attest all four checklists. Input admission precedes model credentials: complete
-filtered diff up to 6,000 lines/128 KiB and complete hash-valid image evidence.
-Comprehensive reports allow 60,000 bytes each, 120,000 bytes combined, with a
-256 KiB bound on actual chair stdin. Incomplete panel coverage skips chair calls
-and publishes fixed diagnostics and unadjudicated severity-keyword presence booleans without a code verdict.
-See [review input admission](pr-review-head-images.md#review-input-admission-and-panel-size)
-and the [promotion constraint](branch-strategy.md#oversized-promotion-review).
-The panel and chair have a 10-second hard-kill grace. The job ceiling is 90 minutes.
-After Git/CLI/prompt preparation,
-immediately before the panel and again immediately before chair synthesis, the same OIDC
-role obtains a fresh one-hour session; its permissions and maximum session duration
-are unchanged. Failed or timed-out chair output cannot supply a successful verdict.
-Missing/failed vendor reports remain blocking; both vendors must cover all four checklists.
+Automatic review code comes from immutable `github.sha`. The action reads target-base source and prepared HEAD changes. The protected recovery path still requires an exact SHA label and environment approval. The official Claude Code Action invokes Amazon Bedrock through the existing `AWS_CI_REVIEW_ROLE_ARN` in `us-east-1`. Model jobs have read access to PRs. A separate job publishes the required result after checking the current base and head. [Review input and verification](pr-review-head-images.md)
 
 <a id="3-per-stack-terraform-secrets--스택별-tf-시크릿"></a>
 
@@ -354,6 +334,17 @@ terraform -chdir=terraform/foundation apply tfplan       # apply EXACTLY that pl
 Sensitive-value policy (public repo — Actions LOGS are public): role ARNs and
 anything carrying the account id live in repo **secrets** (auto-masked in
 logs), never variables; every credentials step sets `mask-aws-account-id`.
+
+For dev Agent Lambda cross-account reads, the optional repository secret
+`AGENT_EXTERNAL_ID_DEV` supplies `TF_VAR_agent_external_id` only to the Terraform
+plan step. Explicit `agent_external_id` in the stack's tfvars takes precedence,
+including an explicit empty value. Saved-plan apply uses the already reviewed
+value; this input is not exposed to build or publisher steps. When the existing
+Lambdas already carry `AWSOPS_EXTERNAL_ID`, configure that same established value
+before an unrelated release and verify that the plan preserves it. The input
+creates no role, trust policy or additional permission; an unset value retains
+the variable's empty default and can otherwise plan removal of unmanaged values.
+
 Cognito users: dev/preview stacks get the shared regular **demo user**
 (`demo_email` defaults to `demo@awsops.local`; its password rides as the
 `TF_VAR_DEMO_PASSWORD` repo secret, bound as `TF_VAR_demo_password` in Terraform's
@@ -427,7 +418,7 @@ Then register the generated files (base64) as repo secrets:
 |---|---|
 | all stacks (repo-wide) | `AWS_ACCOUNT_ID_DEV` (12-digit development/preview account; also required by the web helper on main for account exclusion) / `TF_PLAN_ENC_KEY` (saved-plan/failure-capsule encryption, private asset HMAC and a separate failure HMAC domain; rotation requires the matching key for old bundles) / `TF_VAR_DEMO_PASSWORD` (demo user) / role-ARN secrets `AWS_CI_BUILD_ROLE_ARN` · `AWS_CI_BUILD_DEV_ROLE_ARN` · `AWS_CI_DEPLOYER_ROLE_ARN` · `AWS_CI_DEPLOYER_DEV_ROLE_ARN` · `AWS_CI_TERRAFORM_PLAN_ROLE_ARN` · `AWS_CI_REVIEW_ROLE_ARN` (moved from repo variables — public-repo logs never mask variables) |
 | production (`main`) | `TF_BACKEND_HCL` / `TF_TFVARS` / repository secret `AWS_ACCOUNT_ID_DEV` (12-digit dev-account exclusion check; required even on main) |
-| dev (`awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_DEV` / `TF_TFVARS_DEV`; uses the repository-wide account secret above for migrations, runtime builds and provisioning |
+| dev (`awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_DEV` / `TF_TFVARS_DEV` / optional `AGENT_EXTERNAL_ID_DEV`; uses the repository-wide account secret above for migrations, runtime builds and provisioning |
 | user branch `atomoh`/`ssminji`/`whchoi` (`<user>.awsops-dev.whchoi.net`) | `TF_BACKEND_HCL_PREVIEW_<USER>` / `TF_TFVARS_PREVIEW_<USER>` (uppercased branch name) |
 
 ```bash
@@ -436,6 +427,11 @@ gh secret set TF_BACKEND_HCL_DEV -R aws-samples/sample-awsops \
 gh secret set TF_TFVARS_DEV -R aws-samples/sample-awsops \
   --body "$(base64 -w0 terraform/foundation/terraform.tfvars)"
 ```
+
+When onboarding another preview branch, add its explicit `TF_BACKEND_HCL_PREVIEW_<USER>`
+and `TF_TFVARS_PREVIEW_<USER>` selections to `deploy-web.yml`, `terraform.yml`, and
+`deploy-agentcore.yml`, including every relevant job. Update branch triggers, target
+allowlists and OIDC trust separately; creating secrets alone does not enable a branch.
 
 Store `AWS_ACCOUNT_ID_DEV` as a repository-wide secret identifying the shared development
 and preview account. Those stacks' configured role and STS caller must match it before AWS reads/writes. A missing backend
@@ -503,6 +499,8 @@ Readiness is a separate capability controlled by
 preserves explicit tfvars and its default false. The runtime profile alone never enables it.
 See [readiness capability](runtime-foundation.md#readiness-capability) for billed access and revocation.
 `CI_STEAMPIPE_AWS_FILL_RATE_DEV` optionally overrides refill 0.1–20 on full dev plans with the verified runtime profile; empty/unset preserves tfvars/defaults. Apply replays the reviewed plan. See the [refill contract](steampipe-quota-and-staleness.md#development-ci-refill-override).
+`CI_TOPOLOGY_ENTITIES_ENABLED_DEV` is an optional nonsecret repository variable for full development Terraform plans. Use `true` only after provisioning and verifying the dedicated reader secret and publishing the first host snapshot. Use `false` to plan deactivation. An unset variable preserves tfvars (Terraform defaults to false). Other branches and bootstrap plans ignore the variable. Apply replays the reviewed saved plan. See [the topology pilot switch](graph-read-contract.md#dev-pilot-switch).
+
 `CI_GRAPH_REBUILD_INTERVAL_MINS_DEV` is an optional nonsecret integer variable
 from 0 to 1440, accepted only for full dev plans with `CI_READONLY_RUNTIME_DEV=true`.
 It writes `graph_rebuild_interval_mins` to `ci-runtime.auto.tfvars.json` without
@@ -513,6 +511,15 @@ integration proves activation. The timer writes application graph records, not
 AWS-resource changes, and its cadence does not relax source freshness limits.
 See the [graph timer contract](graph-read-contract.md#optional-dev-ci-timer-override)
 for scope checks, verification and explicit `0` disablement.
+`CI_PRIVATELINK_ADDITIONS_DEV` is an optional repository **secret** that adds new labels
+to the effective `privatelink_endpoints` map on full-scope dev plans without rewriting
+`TF_TFVARS_DEV`. The plan job writes them to the ignored private
+`ci-privatelink.auto.tfvars.json` (a tracked copy is refused) and removes that file in
+both plan and apply cleanup; empty/unset preserves the protected tfvars. It holds
+connection configuration only, never a datasource credential. Apply replays the reviewed
+saved plan, not the current secret. See
+[adding another datasource](privatelink-observability.md#adding-another-datasource-to-a-running-dev-stack)
+for the accepted format and limits.
 `AWS_ACCOUNT_ID_DEV` is a required repository **secret** for both migration jobs, runtime image builds, dev AgentCore provisioning and every AWS-facing Deploy Web job (including main's exclusion check); the guard job does not need it. No variable/default-account fallback exists. On dev/preview it must match the configured role accounts and actual STS
 callers; this agreement is not proof of effective permissions or an independent classification of the account as development.
 
@@ -1083,7 +1090,7 @@ Plan and Apply migrate together from `tfplan` to `tfplan-<attempt>`; historical 
 retain the old format and inspector. The reference overwrite uses the upload action's
 same-run runtime token, so `GITHUB_TOKEN` remains `actions: read`, not `actions: write`.
 
-Use a trusted checkout at the plan's full SHA with Terraform 1.15.7 provider schemas
+Use a trusted checkout at the plan's full SHA with Terraform 1.17.1 provider schemas
 already installed. Authenticate `gh` and the intended AWS profile. No client encryption
 key is required for this S3 inspection:
 
@@ -1408,7 +1415,7 @@ and preserve all existing migration checksums and `-- since:` headers.
 
 After a successful migration, deploy the reviewed web image and pass the full dev runtime gate, including authenticated database access, before publishing service DNS.
 
-Offline controller checks require Node 20, Python 3 with PyYAML and boto3/botocore, Terraform 1.15.7 and cached providers (`pip install -r agent/requirements.txt` supplies the SDK):
+Offline controller checks require Node 26, Python 3 with PyYAML and boto3/botocore, Terraform 1.17.1 and cached providers (`pip install -r agent/requirements.txt` supplies the SDK):
 
 ```bash
 node --test scripts/v2/ci/run-migration*.test.mjs
@@ -1502,7 +1509,7 @@ persist it. The restored `TF_TFVARS_DEV` must enable `create_demo_user=true`, an
 effective `demo_email` must exactly match that applied username.
 
 The credential must match the existing user's deployed password. Deploy Web uses
-Terraform **1.15.7** to evaluate the restored configuration: the repository secret
+Terraform **1.17.1** to evaluate the restored configuration: the repository secret
 `TF_VAR_DEMO_PASSWORD` is supplied as the lowercase environment variable
 `TF_VAR_demo_password`, a shared **default**. A protected per-stack `demo_password`
 assignment in `TF_TFVARS_DEV` takes precedence, including when the shared secret is
@@ -1549,7 +1556,7 @@ reset a password to make a check pass. Required dev preparation performs its own
 Terraform init (10 minutes) before output/console (2 minutes each); it must finish before
 image pinning or rollout.
 
-Offline checks for this path (Node 20, curl, OpenSSL, Python 3 with PyYAML, and Terraform 1.15.7):
+Offline checks for this path (Node 26, curl, OpenSSL, Python 3 with PyYAML, and Terraform 1.17.1):
 
 ```bash
 node --test scripts/v2/deployment-smoke.test.mjs
@@ -1563,7 +1570,7 @@ its backend/state and HTTP boundaries are substituted, with no AWS/provider call
 ### Offline deployment checks
 
 Install test dependencies once with `python3 -m pip install -r scripts/v2/requirements-test.txt`.
-Use Node.js 20, OpenSSL, and Terraform **1.15.7**. For offline provider initialization, set
+Use Node.js 26, OpenSSL, and Terraform **1.17.1**. For offline provider initialization, set
 `TF_CLI_CONFIG_FILE` to a filesystem-mirror configuration with the locked providers and no
 `direct` fallback. The checks use mocked providers and a localhost-only HTTP state backend.
 `terraform-test.sh` copies **tracked working-tree files only** into a disposable directory

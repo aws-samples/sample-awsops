@@ -27,6 +27,8 @@ export async function getRuntimeArn(): Promise<string> {
 export interface ChatMsg {
   role: 'user' | 'assistant';
   content: string;
+  account?: string; // 'host' | 12-digit id — which account the turn was answered for (chat-context.ts)
+  tools?: string[]; // assistant turns: tools that answer called (chat-context.ts sanitizeHistory)
 }
 
 export interface InvokeInput {
@@ -36,16 +38,18 @@ export interface InvokeInput {
   // POST handler always derives this itself — an unscoped/invalid client-supplied value is never
   // passed through untouched, only a value already matching this exact own-namespaced shape
   // (pentest-remediation P3-1, PR #200 review).
-  systemPromptOverride?: string; // ADR-031: resolved custom prompt
-  toolAllowlist?: string[];      // ADR-031 Phase 2: now the server-side-enforced set
-  agentName?: string;            // ADR-031: traceability
+  systemPromptOverride?: string; // ADR-004[legacy 031]: resolved custom prompt
+  toolAllowlist?: string[];      // ADR-004[legacy 031] Phase 2: now the server-side-enforced set
+  agentName?: string;            // ADR-004[legacy 031]: traceability
   agentVersion?: number;
   skillHashes?: string[];
-  accountId?: string;            // ADR-031 Phase 2: agent.py reads payload.accountId
+  accountId?: string;            // ADR-004[legacy 031] Phase 2: agent.py reads payload.accountId
   accountAlias?: string;
-  integrations?: ResolvedIntegration[]; // ADR-039 P2-infra inc2: live egress-READ MCP connections
+  integrations?: ResolvedIntegration[]; // ADR-007[legacy 039] P2-infra inc2: live egress-READ MCP connections
   extraContext?: string; // bounded BFF context appended to the agent system prompt (e.g. cached datasource schemas)
   responseLanguage?: string; // v1-parity: UI-language directive ('ko'|'en'|'zh'|'ja') — agent.py forces the answer language
+  regions?: string[]; // the target account's enabled inventory regions (['*'] = all regions) — agent.py region scope
+  handoff?: boolean; // opt in to cross-gateway handoff (built-in section agents only); sent only when true
 }
 
 async function readResponse(resp: unknown): Promise<string> {
@@ -75,7 +79,7 @@ export interface ToolQuery { tool: string; query: string }
 /** One agent stream event: incremental answer text, a tool invocation, the model id, the
  *  answer's token usage, or a tool's generated query (answer provenance — agent.py emits
  *  `{"tool"}` / `{"model"}` / `{"usage"}` / `{"toolInput"}` frames alongside deltas). */
-export interface AgentEvent { delta?: string; tool?: string; model?: string; usage?: TokenUsage; toolInput?: ToolQuery }
+export interface AgentEvent { delta?: string; tool?: string; model?: string; usage?: TokenUsage; toolInput?: ToolQuery; gateways?: string[] }
 
 /** Extract an event from one SSE `data:` payload. The streaming agent.py yields
  *  `{"delta": str}` dicts (AgentCore JSON-encodes them) plus `{"tool": str}` / `{"model": str}`
@@ -97,6 +101,8 @@ function extractEvent(data: string): AgentEvent | null {
       if (ti && typeof ti.tool === 'string' && typeof ti.query === 'string') {
         return { toolInput: { tool: ti.tool, query: ti.query } };
       }
+      const gw = (o as { gateways?: unknown }).gateways;
+      if (Array.isArray(gw) && gw.every((g) => typeof g === 'string')) return { gateways: gw as string[] };
       return null;
     }
     return typeof o === 'string' && o ? { delta: o } : null;
@@ -170,6 +176,8 @@ function buildCommand(input: InvokeInput, arn: string): InvokeAgentRuntimeComman
   if (input.integrations?.length) body.integrations = input.integrations;
   if (input.extraContext) body.extraContext = input.extraContext;
   if (input.responseLanguage) body.responseLanguage = input.responseLanguage;
+  if (input.regions?.length) body.regions = input.regions;
+  if (input.handoff === true) body.handoff = true;
   return new InvokeAgentRuntimeCommand({
     agentRuntimeArn: arn,
     qualifier: 'DEFAULT',

@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import DiagSignalChips from './DiagSignalChips';
 import LogStreamView from './LogStreamView';
+import { isComposingKey } from '@/lib/ime';
 import { EXAMPLE_QUERIES, AI_EXAMPLES, QUERY_LANGUAGE } from '@/lib/example-queries';
 import { Search } from 'lucide-react';
 import Card from '@/components/ui/Card';
@@ -173,7 +174,7 @@ export default function ExplorePanel({ instanceId }: { instanceId?: number }) {
             value={nl}
             onChange={(e) => setNl(e.target.value)}
             placeholder={ds ? tt('자연어로 설명… 예: "모든 노드의 CPU 사용률"') : tt('먼저 데이터소스를 선택하세요')}
-            onKeyDown={(e) => { if (e.key === 'Enter') generate(); }}
+            onKeyDown={(e) => { if (e.key === 'Enter' && !isComposingKey(e)) generate(); }}
             disabled={!ds}
           />
           <Button variant="secondary" onClick={generate} disabled={genBusy || !ds || !nl.trim()}>
@@ -215,6 +216,7 @@ export default function ExplorePanel({ instanceId }: { instanceId?: number }) {
             onChange={(e) => { setQuery(e.target.value); setGenFrom(null); }}
             placeholder={ds ? tt(PH[ds.kind] ?? '쿼리를 입력하세요') : tt('먼저 데이터소스를 선택하세요')}
             onKeyDown={(e) => {
+              if (isComposingKey(e)) return;
               if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
                 e.preventDefault();
                 run();

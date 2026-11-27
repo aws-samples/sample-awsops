@@ -1,4 +1,4 @@
-"""AWSops v2 ADR-034 — RCA write-back PURE-helper unit tests (no AWS, no DB).
+"""AWSops v2 ADR-006[legacy 034] — RCA write-back PURE-helper unit tests (no AWS, no DB).
 
 Run: python3 scripts/v2/incident/test_writeback_render.py   (or python3 -m pytest <file>)
 

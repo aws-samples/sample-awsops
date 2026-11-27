@@ -12,7 +12,15 @@ vi.mock('@/lib/account-regions', () => ({
 }));
 vi.mock('@/lib/auth', () => ({ verifyUser: (...a: unknown[]) => verifyUser(...a) }));
 vi.mock('@/lib/eks-registry', () => ({ getAllowedClusters: (...a: unknown[]) => getAllowedClusters(...a) }));
-vi.mock('@/lib/eks-incluster', () => ({ listInCluster: (...a: unknown[]) => listInCluster(...a) }));
+const nodeSourceOverride = vi.hoisted(() => ({ value: undefined as undefined | 'aws-api' | 'kubernetes' }));
+vi.mock('@/lib/eks-incluster', () => ({
+  listInCluster: (...a: unknown[]) => listInCluster(...a),
+  // The real listNodes reports the source of the read itself; tests derive it from rows unless overridden.
+  listNodes: async (c: string) => {
+    const rows = (await listInCluster(c, 'nodes')) as Array<{ source?: string }>;
+    return { rows, source: nodeSourceOverride.value ?? (rows.some((r) => r.source === 'aws-api') ? 'aws-api' : 'kubernetes') };
+  },
+}));
 import { GET } from './route';
 import { EksScopeError } from '@/lib/eks-context';
 
@@ -24,7 +32,7 @@ const EVENT = { kind: 'Pod', object: 'default/p1', reason: 'BackOff', message: '
 beforeEach(() => {
   vi.stubEnv('HOST_ACCOUNT_ID', '111111111111');
   vi.stubEnv('AWS_REGION', 'ap-northeast-2');
-  verifyUser.mockReset(); getAllowedClusters.mockReset(); listInCluster.mockReset();
+  verifyUser.mockReset(); getAllowedClusters.mockReset(); listInCluster.mockReset(); nodeSourceOverride.value = undefined;
   verifyUser.mockResolvedValue({ sub: 'u' });
   getAllowedClusters.mockResolvedValue(new Set(['c1']));
 });
@@ -53,6 +61,38 @@ describe('GET /api/eks/fleet', () => {
     expect(c).not.toHaveProperty('pods');      // schema check — aggregates only (P4: codex)
     expect(c).not.toHaveProperty('nodes');
     expect(c).not.toHaveProperty('serviceTypes'); // deliberately excluded from the payload
+  });
+  it('degrades only the node fields when the node read fails', async () => {
+    listInCluster.mockImplementation(async (_c: string, kind: string) => {
+      if (kind === 'nodes') throw Object.assign(new Error('forbidden'), { name: 'AccessDeniedException' });
+      return ({ pods: [POD], deployments: [{ name: 'd' }], services: [{ type: 'ClusterIP' }], events: [] } as Record<string, unknown[]>)[kind] ?? [];
+    });
+    const c = (await (await GET(req())).json()).clusters[0];
+    expect(c.reachable).toBe(true);
+    expect(c.counts).toEqual({ nodes: 0, nodesReady: 0, pods: 1, podsRunning: 1, deployments: 1, services: 1 });
+    expect(c.nodesReason).toBe('denied');
+    expect(c.nodesError).toMatch(/^Node details are unavailable\./);
+    expect(c.podsByNamespace).toEqual([{ namespace: 'default', count: 1 }]);
+  });
+  it('marks the AWS-API node source and keeps EC2-view rows out of the reserved-% meters', async () => {
+    const awsNode = { ...NODE, status: 'EC2 running', source: 'aws-api' };
+    listInCluster.mockImplementation(async (_c: string, kind: string) => (
+      { nodes: [awsNode], pods: [POD] } as Record<string, unknown[]>
+    )[kind] ?? []);
+    const c = (await (await GET(req())).json()).clusters[0];
+    expect(c.nodesSource).toBe('aws-api');
+    // No kubelet Ready condition exists: Ready is unknown (null), never 0 Ready.
+    expect(c.counts).toMatchObject({ nodes: 1, nodesReady: null, ec2Running: 1 });
+    // EC2-view rows have no kubelet allocatable, so no meter is drawn for them.
+    expect(c.nodeAgg).toEqual([]);
+    expect(c).not.toHaveProperty('nodesError');
+  });
+  it('an empty EC2/node-group read still reports Ready as unknown, not 0', async () => {
+    nodeSourceOverride.value = 'aws-api';
+    listInCluster.mockImplementation(async (_c: string, kind: string) => (kind === 'pods' ? [POD] : []));
+    const c = (await (await GET(req())).json()).clusters[0];
+    expect(c.nodesSource).toBe('aws-api');
+    expect(c.counts).toMatchObject({ nodes: 0, nodesReady: null });
   });
   it('degrades a failing cluster to reachable:false (never 500)', async () => {
     getAllowedClusters.mockResolvedValue(new Set(['ok', 'down']));

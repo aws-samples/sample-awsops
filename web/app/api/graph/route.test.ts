@@ -14,6 +14,7 @@ vi.mock('@/lib/db', () => ({ getPool: () => sharedPool }));
 import { GET } from './route';
 import { graphReadTransaction, graphTransaction, GraphReadBusy, GraphReadDeadline } from '@/lib/graph-transaction';
 import claimCases from '../../../lib/fixtures/trace-queue-claims.json';
+import inferenceClaims from '../../../lib/fixtures/trace-inference-claims.json';
 afterEach(() => vi.restoreAllMocks());
 
 describe('graph collection evidence API', () => {
@@ -27,6 +28,13 @@ describe('graph collection evidence API', () => {
       };
       return { rows: [] };
     });
+  });
+
+  it.each(inferenceClaims)('projects retained inference evidence: $name', async fixture => {
+    query.mockImplementation(async (sql: string) => ({ rows: sql.includes('FROM topology_nodes')
+      ? [{ id: 'claim:one', kind: fixture.kind, label: 'reported target', meta: fixture.meta }] : [] }));
+    const body = await (await GET(new Request('http://localhost/api/graph?class=trace'))).json();
+    expect(body.nodes[0].meta).toEqual(fixture.expected);
   });
 
   it('returns failed collection evidence even when no graph nodes exist', async () => {
@@ -131,6 +139,12 @@ describe('graph collection evidence API', () => {
     auth.mockResolvedValue(null);
     const response = await GET(new Request('http://localhost/api/graph?class=trace'));
     expect(response.status).toBe(401);
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it('rejects an account-wrapped root outside an explicitly selected account before SQL', async () => {
+    const response = await GET(new Request('http://localhost/api/graph?class=infra&account=self&from=%40222233334444%2Frds%3Aapp-db'));
+    expect(response.status).toBe(400);
     expect(query).not.toHaveBeenCalled();
   });
 

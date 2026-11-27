@@ -4,10 +4,26 @@ import type { Msg } from './MessageList';
 import { sectionByKey } from '@/lib/sections';
 import type { ThreadSummary, ThreadMessage } from '@/lib/chat-store';
 import { getActiveAccount } from '@/lib/account-context';
+import { boundOutgoingHistory } from '@/lib/chat-context';
+import { getPageContext } from '@/lib/chat-page-context';
+
+const TOO_LARGE_MSG: Record<string, string> = {
+  ko: '대화나 질문이 너무 길어 보낼 수 없습니다. 새 대화를 시작하거나 질문을 줄여 주세요.',
+  en: 'This conversation or question is too long to send. Start a new conversation or shorten the question.',
+  zh: '对话或问题过长，无法发送。请开始新对话或缩短问题。',
+  ja: '会話または質問が長すぎて送信できません。新しい会話を始めるか、質問を短くしてください。',
+};
 
 export function newSessionId(): string {
-  const s = (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.round(Math.random() * 1e9)}`);
-  return s.length >= 33 ? s : s.padEnd(36, '0');
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  // getRandomValues also works where randomUUID is unavailable. Never fall back to Math.random.
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(18));
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** Accept only a string array (persisted meta / SSE payloads are untrusted shapes). */
+function asGateways(v: unknown): string[] | undefined {
+  return Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === 'string') ? (v as string[]) : undefined;
 }
 
 export function parseFrame(frame: string): {
@@ -18,6 +34,7 @@ export function parseFrame(frame: string): {
   method?: string;
   via?: string;
   tools?: string[];
+  gateways?: string[];
   model?: string;
   phase?: string;
   elapsedMs?: number;
@@ -27,6 +44,7 @@ export function parseFrame(frame: string): {
   costUsd?: number;
   tool?: string;
   query?: string;
+  account?: string;
 } {
   const isMeta = frame.startsWith('event: meta');
   const isStatus = frame.startsWith('event: status');
@@ -121,13 +139,21 @@ export function useChat() {
         return;
       }
       const data: { thread: ThreadSummary; messages: ThreadMessage[] } = await res.json();
-      setMsgs(data.messages.map((m) => {
-        const meta = (m.meta ?? {}) as { ranked?: Msg['ranked']; method?: string; via?: string; tools?: string[]; model?: string; elapsedMs?: number; usage?: Msg['usage']; costUsd?: number };
+      // The answered-for account lives on the assistant row's meta; its user turn (the row before
+      // it) shares it.
+      const accountOf = (m?: ThreadMessage) => {
+        const a = (m?.meta as { account?: unknown } | null | undefined)?.account;
+        return typeof a === 'string' ? a : undefined;
+      };
+      setMsgs(data.messages.map((m, i) => {
+        const meta = (m.meta ?? {}) as { ranked?: Msg['ranked']; method?: string; via?: string; tools?: string[]; gateways?: unknown; model?: string; elapsedMs?: number; usage?: Msg['usage']; costUsd?: number };
+        const next = data.messages[i + 1];
         return {
           role: m.role, content: m.content, gateway: m.gateway ?? undefined,
           ranked: meta.ranked, method: meta.method, via: meta.via,
-          tools: meta.tools, model: meta.model, elapsedMs: meta.elapsedMs,
+          tools: meta.tools, gateways: asGateways(meta.gateways), model: meta.model, elapsedMs: meta.elapsedMs,
           usage: meta.usage, costUsd: meta.costUsd,
+          account: m.role === 'assistant' ? accountOf(m) : (next?.role === 'assistant' ? accountOf(next) : undefined),
         };
       }));
       sessionRef.current = data.thread.sessionId;
@@ -183,15 +209,22 @@ export function useChat() {
     const parsed = parseFrame(frame);
     if (parsed.kind === 'meta') {
       if (parsed.threadId) setThread(parsed.threadId);
+      if (typeof parsed.account === 'string') {
+        // Stamp the in-flight exchange (the trailing user + assistant pair) with the account the
+        // server actually answered for.
+        const account = parsed.account;
+        setMsgs((arr) => arr.map((m, i) => (i >= arr.length - 2 ? { ...m, account } : m)));
+      }
       if (parsed.gateway) {
         patchLast((m) => ({ ...m, gateway: parsed.gateway, ranked: parsed.ranked, method: parsed.method, via: parsed.via }));
       }
       // Answer-provenance footer: a second, later `meta` frame (no `gateway`) carries the
       // server-measured elapsed total + tools/model + token usage/cost, known only after resolve.
-      if (parsed.tools || parsed.model || parsed.elapsedMs !== undefined || parsed.usage) {
+      if (parsed.tools || asGateways(parsed.gateways) || parsed.model || parsed.elapsedMs !== undefined || parsed.usage) {
         patchLast((m) => ({
           ...m,
           tools: parsed.tools ?? m.tools,
+          gateways: asGateways(parsed.gateways) ?? m.gateways,
           model: parsed.model ?? m.model,
           elapsedMs: parsed.elapsedMs ?? m.elapsedMs,
           usage: parsed.usage ?? m.usage,
@@ -217,7 +250,13 @@ export function useChat() {
 
   async function send(prompt: string, overrideSection?: string | null, switchedFrom?: string) {
     if (busy) return;
-    const history = msgs.map((m) => ({ role: m.role, content: m.content }));
+    const history = msgs.map((m) => ({
+      role: m.role, content: m.content,
+      ...(m.account ? { account: m.account } : {}),
+      ...(m.role === 'assistant' && m.tools?.length ? { tools: m.tools } : {}),
+    }));
+    // Follow-up continuity: the section that answered last (server re-validates; a keyword wins).
+    const previousSection = msgs.toReversed().find((m) => m.role === 'assistant' && m.gateway)?.gateway;
     setMsgs((m) => [...m, { role: 'user', content: prompt }, { role: 'assistant', content: '', streaming: true }]);
     setBusy(true);
     const ac = new AbortController();
@@ -235,13 +274,22 @@ export function useChat() {
         const a = getActiveAccount();
         accountId = a && a !== 'self' && a !== '__all__' ? a : undefined;
       } catch { /* SSR / no storage — server defaults apply */ }
+      // What the user is looking at (e.g. the site flow view) rides along only while a page has set it; it is part
+      // of requestFields so the outgoing-history bound accounts for its size.
+      const pageContext = getPageContext();
+      const requestFields = { prompt, section: overrideSection ?? null, previousSection, switchedFrom,
+        sessionId: sessionRef.current, threadId: threadIdRef.current ?? undefined, lang, accountId,
+        ...(pageContext ? { pageContext } : {}) };
       const res = await fetch('/api/chat', {
         method: 'POST', signal: ac.signal,
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ prompt, messages: history, section: overrideSection ?? null, switchedFrom, sessionId: sessionRef.current, threadId: threadIdRef.current ?? undefined, lang, accountId }),
+        body: JSON.stringify({ ...requestFields,
+          messages: boundOutgoingHistory(history, undefined, undefined, requestFields) }),
       });
       if (!res.ok || !res.body) {
-        patchLast((m) => ({ ...m, content: res.status === 401 ? '세션이 만료되었습니다. 새로고침해 주세요.' : 'AI 응답을 받지 못했습니다.', streaming: false }));
+        patchLast((m) => ({ ...m, content: res.status === 401 ? '세션이 만료되었습니다. 새로고침해 주세요.'
+          : res.status === 413 ? (TOO_LARGE_MSG[lang ?? 'ko'] ?? TOO_LARGE_MSG.ko)
+          : 'AI 응답을 받지 못했습니다.', streaming: false }));
         return;
       }
       const reader = res.body.getReader();
@@ -266,10 +314,10 @@ export function useChat() {
   }
 
   function resendWith(sectionKey: string) {
-    const lastUser = [...msgs].reverse().find((m) => m.role === 'user');
-    const lastAssistant = [...msgs].reverse().find((m) => m.role === 'assistant');
+    const lastUser = msgs.toReversed().find((m) => m.role === 'user');
+    const lastAssistant = msgs.toReversed().find((m) => m.role === 'assistant');
     // Only a misroute candidate if the previous answer came from a LIVE agent —
-    // switching away from an inactive-section guidance bubble is not a misroute (ADR-038 §5).
+    // switching away from an inactive-section guidance bubble is not a misroute (ADR-003[legacy 038] §5).
     const prevGateway = lastAssistant?.gateway;
     const switchedFrom = prevGateway && sectionByKey(prevGateway)?.active ? prevGateway : undefined;
     if (lastUser) void send(lastUser.content, sectionKey, switchedFrom);

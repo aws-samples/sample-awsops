@@ -1,10 +1,10 @@
-"""AWSops v2 ADR-032 — Root-Cause stage Lambda (the analysis stage).
+"""AWSops v2 ADR-006[legacy 032] — Root-Cause stage Lambda (the analysis stage).
 
 Gathers the Sub-agent findings, runs the ported RCA analysis prompt through agent_bridge.invoke,
 parses the machine-readable ROOT_CAUSE / CATEGORY / CONFIDENCE header (ported from
 src/lib/alert-diagnosis.ts buildAnalysisPrompt + extractField/extractCategory/extractConfidence),
-and persists the structured RCA into incidents.rca — the ADR-034 write-back SEAM (034 later mirrors
-it to OpsCenter / Incident Manager; here we only persist locally).
+and persists the structured RCA into incidents.rca — the ADR-006[legacy 034] write-back SEAM (the gated ADR-006 write-back path, not yet
+enabled, mirrors it to OpsCenter / Incident Manager; here we only persist locally).
 
 SAFETY: read-only over findings + a single bounded UPDATE of incidents.rca + status. NO mutation of
 AWS resources; the analysis is recommend-only and the prompt rides the SAFEGUARD boundary.
@@ -27,7 +27,7 @@ _VALID_CONFIDENCE = ("high", "medium", "low")
 # --- ported prompt + parsers (src/lib/alert-diagnosis.ts) ---
 
 def build_analysis_prompt(lang="English"):
-    """Ported from buildAnalysisPrompt — the machine-parseable header is the 034 contract."""
+    """Ported from buildAnalysisPrompt — the machine-parseable header is the ADR-006[legacy 034] contract."""
     return (
         "You are an expert SRE performing automated incident diagnosis for AWSops.\n\n"
         "## Output Requirements\n"
@@ -61,7 +61,7 @@ def extract_confidence(content):
 
 
 def parse_rca(content):
-    """Build the structured RCA dict persisted into incidents.rca (the ADR-034 seam shape)."""
+    """Build the structured RCA dict persisted into incidents.rca (the ADR-006[legacy 034] seam shape)."""
     return {
         "root_cause": extract_field(content, "ROOT_CAUSE") or "Analysis complete — see markdown",
         "category": extract_category(content),

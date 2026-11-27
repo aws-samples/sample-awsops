@@ -19,12 +19,16 @@ import logging
 import os
 import sys
 
-# Same model + home region as the Strands path → invocation-log cost attribution intact.
-MODEL_ID = "global.anthropic.claude-sonnet-4-6"
+# This dark Anthropic SDK path retains Sonnet; the live Strands path defaults to GPT-6 Luna.
+# Both use the home region and Bedrock invocation-log cost attribution.
+MODEL_ID = "global.anthropic.claude-sonnet-5-5"
 BEDROCK_REGION = "ap-northeast-2"
 MAX_TOOL_ROUNDS = 8          # hard cap on tool-call rounds (runaway-loop backstop)
-MAX_OUTPUT_TOKENS = 4096     # Anthropic Messages API REQUIRES max_tokens on every call
-MODEL_TEMPERATURE = 0.0      # parity with the Strands BedrockModel — deterministic tool selection (ADR-038)
+# Anthropic Messages API REQUIRES max_tokens. Sized above the old 4096 because thinking between
+# tool calls (`between_tools`) bills against the same cap on tool-using turns.
+MAX_OUTPUT_TOKENS = 8192
+# sonnet-5-5 rejects `temperature`. Any thinking blocks are replayed verbatim (_assistant_content).
+MODEL_THINKING = {"type": "between_tools"}
 EXTRA_CONTEXT_CAP = 8000     # bound BFF-supplied context (parity with agent.handler)
 TOOL_RESULT_CHAR_CAP = 24000 # bound a single tool result fed back (avoid per-round context/token blowup)
 
@@ -34,6 +38,9 @@ logger = logging.getLogger(__name__)
 def should_use_anthropic_loop(payload):
     """Route decision: env `ANTHROPIC_AGENT_LOOP_ENABLED` is the default; `payload.agentLoop`
     ('anthropic' | 'strands') overrides per-request. Returns True iff the dark path handles it."""
+    # The dark path calls Claude on Bedrock; other deploy-time model families never route here.
+    if os.environ.get("MODEL_PROVIDER", "").strip() not in ("", "mixed", "bedrock_claude"):
+        return False
     override = (payload or {}).get("agentLoop")
     if override == "anthropic":
         return True
@@ -124,7 +131,7 @@ def tool_result_block(tool_use_id, result, is_error=False):
 
 
 def apply_cache_control(system_blocks, anthropic_tools):
-    """Prompt-cache parity with the Strands path (cache_config='auto' + cache_tools): mark the
+    """Explicit Claude prompt caching for this dark path; Luna rejects cache points. Mark the
     LAST system block and the LAST tool with ``cache_control={'type':'ephemeral'}``. No-op on empties."""
     if system_blocks:
         system_blocks[-1]["cache_control"] = {"type": "ephemeral"}
@@ -133,7 +140,7 @@ def apply_cache_control(system_blocks, anthropic_tools):
 
 
 def _assistant_content(final):
-    """Rebuild a serializable assistant turn (text + tool_use blocks) from a final message,
+    """Rebuild a serializable assistant turn (thinking + text + tool_use blocks) from a final message,
     so it can be appended to ``messages`` before the tool_result turn. Handles dict/object blocks."""
     out = []
     for b in getattr(final, "content", None) or []:
@@ -142,6 +149,16 @@ def _assistant_content(final):
             txt = _block_attr(b, "text", "") or ""
             if txt.strip():  # Anthropic rejects empty text blocks in INPUT → drop them (P4 CI: API 400)
                 out.append({"type": "text", "text": txt})
+        elif t == "thinking":  # replay unchanged: an edited or dropped block invalidates the turn
+            blk = {"type": "thinking", "thinking": _block_attr(b, "thinking", "") or ""}
+            sig = _block_attr(b, "signature")
+            if sig:  # the API rejects a null signature; real SDK blocks always carry one
+                blk["signature"] = sig
+            out.append(blk)
+        elif t == "redacted_thinking":
+            data = _block_attr(b, "data")
+            if data:
+                out.append({"type": "redacted_thinking", "data": data})
         elif t == "tool_use":
             out.append({"type": "tool_use", "id": _block_attr(b, "id"),
                         "name": _block_attr(b, "name"), "input": _block_attr(b, "input") or {}})
@@ -178,7 +195,7 @@ async def drive_anthropic_loop(*, aclient, mcp_call, model, system_blocks,
         while True:
             offer_tools = bool(anthropic_tools) and rounds < max_rounds
             kwargs = {"model": model, "max_tokens": max_tokens,
-                      "temperature": MODEL_TEMPERATURE,
+                      "thinking": MODEL_THINKING,
                       "system": system_blocks, "messages": msgs}
             if offer_tools:
                 kwargs["tools"] = anthropic_tools
@@ -198,7 +215,7 @@ async def drive_anthropic_loop(*, aclient, mcp_call, model, system_blocks,
             msgs.append({"role": "assistant", "content": _assistant_content(final)})
             results = []
             for tu in tool_uses:
-                # Defense-in-depth (ADR-031/039): the allowlist is enforced OUTSIDE the model. The model
+                # Defense-in-depth (ADR-004[legacy 031]/ADR-007[legacy 039]): the allowlist is enforced OUTSIDE the model. The model
                 # output is NOT a security boundary — refuse to EXECUTE any tool the model names that is
                 # not in the allowed set, even if it hallucinated a gateway tool we did not expose.
                 if allowed_tool_names is not None and tu["name"] not in allowed_tool_names:
@@ -272,7 +289,7 @@ async def run_anthropic_loop(payload):
         import agent  # noqa: F811 — module-import fallback
     from anthropic import AsyncAnthropicBedrock  # lazy: only the dark path needs the SDK
 
-    user_input, history = agent.build_conversation(payload)
+    user_input, history = agent.scoped_conversation(payload)  # + per-turn account labels
     if not user_input:
         yield {"delta": "No input provided."}
         return
@@ -288,7 +305,8 @@ async def run_anthropic_loop(payload):
     # Cross-account directive (effective_account_id blanks the host / __all__ → same-account, no prefix).
     account_id = agent.effective_account_id(payload.get("accountId", ""))
     account_alias = payload.get("accountAlias", "")
-    account_directive = agent.build_account_directive(account_id, account_alias)
+    account_directive = (agent.build_account_directive(account_id, account_alias)
+                         + agent.build_region_scope(payload.get("regions")))
     if account_id and account_id != "__all__":
         user_input = f"[Target Account: {account_alias or account_id} ({account_id})] {user_input}"
 

@@ -93,6 +93,7 @@ function serve(options: {
 }
 beforeEach(() => {
   window.localStorage.clear();
+  window.history.replaceState({}, '', '/topology?view=flow');
   vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => window.setTimeout(() => cb(0), 0));
   vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id));
 });
@@ -155,9 +156,9 @@ describe('sample topology evidence', () => {
     render(<TopologyPage />);
     await screen.findByLabelText('Inventory collection evidence');
     const text = screen.getByLabelText('Inventory collection evidence').textContent;
-    expect(text).toContain('Aggregate sync runs: unknown (15)');
+    expect(text).toContain('Aggregate sync runs: unknown (17)');
     expect(text).toContain('Run health unknown');
-    expect(text).toContain('Inventory read failures: target_group: failed, ecs_task: failed, subnet: failed');
+    expect(text).toContain('Inventory read failures: target_group: failed, ecs_task: failed, subnet: failed, eni: failed');
     expect(screen.queryByTestId('target')).toBeNull();
   });
   it.each(['entry-only', 'no-entry'])('separates %s onboarding coverage from EKS read failure', async clusterAccess => {
@@ -196,7 +197,7 @@ describe('sample topology evidence', () => {
     expect((await ready()).textContent).toBe(ip);
     expect(screen.getByLabelText('Inventory collection evidence').textContent).toContain(expected);
   });
-  it.each([{ accounts: [member] }, { accounts: ALL_ACCOUNTS }, { accounts: ['self', member] }])('collapses unavailable run health and explains EKS opt-out for $accounts', async ({ accounts }) => {
+  it.each<{ accounts: string[] | typeof ALL_ACCOUNTS }>([{ accounts: [member] }, { accounts: ALL_ACCOUNTS }, { accounts: ['self', member] }])('collapses unavailable run health and explains EKS opt-out for $accounts', async ({ accounts }) => {
     setActiveScope({ ...DEFAULT_SCOPE, accounts });
     serve({ runStatus: 'succeeded' });
     await ready();
@@ -211,7 +212,7 @@ describe('sample topology evidence', () => {
     serve({ runStatus: 'running' });
     await ready();
     const text = screen.getByLabelText('Inventory collection evidence').textContent;
-    expect(text).toContain('Aggregate sync runs: running (18)');
+    expect(text).toContain('Aggregate sync runs: running (21)');
     expect(text).not.toContain('Aggregate sync issues:');
     expect(text).not.toContain('Run health unknown');
   });
@@ -228,7 +229,7 @@ describe('sample topology evidence', () => {
     serve({ runStatus, rowCapture: null });
     await ready();
     const evidence = screen.getByLabelText('Inventory collection evidence');
-    expect(evidence.textContent).toContain(`Aggregate sync runs: ${runStatus} (18)`);
+    expect(evidence.textContent).toContain(`Aggregate sync runs: ${runStatus} (21)`);
     expect(evidence.textContent).toContain(`Aggregate sync issues: route53: ${runStatus}`);
     expect(evidence.textContent).toContain('Run health unknown for this account scope');
     expect(evidence.textContent).not.toContain(new Date(captured).toLocaleString());
@@ -238,7 +239,7 @@ describe('sample topology evidence', () => {
     serve({ runStatus: 'succeeded' });
     await ready();
     const text = screen.getByLabelText('Inventory collection evidence').textContent;
-    expect(text).toContain('Aggregate sync runs: succeeded (18)');
+    expect(text).toContain('Aggregate sync runs: succeeded (21)');
     expect(text).toContain('Run health unknown for this account scope');
     expect(text).not.toContain('Aggregate sync issues:');
   });
@@ -249,7 +250,7 @@ describe('sample topology evidence', () => {
     await act(async () => setActiveScope({ ...DEFAULT_SCOPE, regions: ['ap-northeast-2'] }));
     const requests = vi.mocked(fetch).mock.calls.slice(count).map(([url]) => new URL(String(url), 'http://localhost'))
       .filter(url => url.pathname.startsWith('/api/inventory/'));
-    expect(requests).toHaveLength(18);
+    expect(requests).toHaveLength(21);
     expect(requests.every(url => url.searchParams.get('regions') === 'ap-northeast-2'
       && url.searchParams.get('accounts') === 'self' && url.searchParams.get('includeGlobal') === '1')).toBe(true);
   });

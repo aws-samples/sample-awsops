@@ -104,7 +104,7 @@ test('build and execution use fixed development credentials and the ARM64 build 
   // by GitHub's secret-output filter. The digest is the only image handoff.
   assert.deepEqual(Object.keys(w.jobs.build.outputs).sort(), ['digest', 'project']);
   assert.equal(w.jobs.migrate.env.MIGRATION_DIGEST, '${{ needs.build.outputs.digest }}');
-  assert.equal(migrate.find(s => s.uses?.startsWith('hashicorp/setup-terraform')).with.terraform_version, '1.15.7');
+  assert.equal(migrate.find(s => s.uses?.startsWith('hashicorp/setup-terraform')).with.terraform_version, '1.17.1');
   assert.equal(migrate.find(s => s.name === 'Clean migration run files').if, 'always()');
   assert.equal(build.find(s => s.name === 'Clean development project config').if, 'always()');
   assert.match(migrate.find(s => s.name === 'Stop only this run task if necessary').if, /always\(\)/);

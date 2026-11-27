@@ -26,7 +26,7 @@ export async function DELETE(request: Request) {
   if (!user) return json({ status: 'error', message: 'unauthenticated' }, 401);
   try {
     return json({ deleted: await deleteAllThreads(user.sub) }, 200);
-  } catch (e) {
-    return json({ status: 'error', message: e instanceof Error ? e.message : String(e) }, 502);
+  } catch {
+    return json({ status: 'error', message: 'Unable to delete chat history' }, 502);
   }
 }

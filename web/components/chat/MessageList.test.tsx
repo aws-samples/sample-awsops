@@ -7,7 +7,7 @@ const doneMsg = (over: Partial<Msg>): Msg => ({ role: 'assistant', content: 'ans
 
 afterEach(cleanup);
 
-describe('MessageList switch chips (ADR-038)', () => {
+describe('MessageList switch chips (ADR-003[legacy 038])', () => {
   it('renders switch chips for active ranked alternates (excluding the used gateway)', () => {
     const msgs: Msg[] = [doneMsg({
       gateway: 'network',
@@ -37,7 +37,7 @@ describe('MessageList switch chips (ADR-038)', () => {
     // scoped to switch chips, not the answer-provenance footer's own copy button
     expect(screen.queryAllByRole('button', { name: /로 다시$/ })).toHaveLength(0);
   });
-  it('renders a combined "통합 분석" badge for a cross-domain synthesis answer (ADR-044)', () => {
+  it('renders a combined "통합 분석" badge for a cross-domain synthesis answer (ADR-003[legacy 044])', () => {
     const msgs: Msg[] = [doneMsg({
       gateway: 'network',
       via: 'multi:network+data',
@@ -116,10 +116,10 @@ describe('MessageList answer-provenance footer (design handoff 개선안 ③)', 
     expect(screen.getByText('+1')).toBeTruthy(); // 5 tools, only top 4 shown
   });
 
-  it('falls back to the default model label and hides elapsed/tools when absent (legacy agent image)', () => {
+  it('omits model attribution and hides elapsed/tools when provenance is absent', () => {
     const msgs: Msg[] = [doneMsg({ gateway: 'network' })];
     render(<MessageList msgs={msgs} />);
-    expect(screen.getByText('Claude Sonnet 4.6')).toBeTruthy(); // fallback constant
+    expect(screen.queryByText(/Claude|GPT-6/)).toBeNull();
     expect(screen.queryByText(/^\d+\.\ds$/)).toBeNull();
     expect(screen.queryByText('Tools')).toBeNull();
   });
@@ -140,3 +140,18 @@ describe('MessageList answer-provenance footer (design handoff 개선안 ③)', 
   });
 });
 
+
+describe('MessageList gateways card (cross-gateway handoff)', () => {
+  it('renders a card listing every gateway when two or more were used', () => {
+    render(<MessageList msgs={[doneMsg({ gateway: 'network', gateways: ['network', 'security', 'external-obs', 'zzz'] })]} />);
+    const card = screen.getByTestId('gateways-used');
+    expect(card.textContent).toContain('Network');
+    expect(card.textContent).toContain('Security');
+    expect(card.textContent).toContain('Observability'); // external-obs → observability label
+    expect(card.textContent).toContain('zzz');           // unknown key → raw
+  });
+  it('renders no card for a single gateway or when absent', () => {
+    render(<MessageList msgs={[doneMsg({ gateway: 'network', gateways: ['network'] }), doneMsg({ gateway: 'network' })]} />);
+    expect(screen.queryByTestId('gateways-used')).toBeNull();
+  });
+});

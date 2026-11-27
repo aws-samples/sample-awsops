@@ -1,5 +1,5 @@
 // web/lib/egress-dlp.ts
-// ADR-040 §2 exfiltration defense (RW-slice T2) — redact secrets/internal data from an outbound
+// ADR-007[legacy 040] §2 exfiltration defense (RW-slice T2) — redact secrets/internal data from an outbound
 // (egress-WRITE) payload before it can leave to an external SaaS, and enforce a destination
 // (channel) allowlist. HONEST LIMIT: regex DLP is best-effort — the mandatory human 4-eyes review of
 // the dry-run preview is the real backstop; this catches the obvious + a long-opaque-blob heuristic
@@ -26,7 +26,7 @@ const PATTERNS: { re: RegExp; cat: string }[] = [
 // only a HIGH-VARIETY run is masked; a low-variety run (e.g. 'xxxx…') falls through to the size cap.
 // HONEST LIMIT (P4 gate): this does NOT catch a SHORT encoded secret — a bare 20-char AWS key base64s
 // to ~28 chars, below the 40-char floor, so it is NOT redacted. The regex is best-effort; the
-// exfiltration backstop is the mandatory human 4-eyes review of the dry-run preview (ADR-040 §2), not
+// exfiltration backstop is the mandatory human 4-eyes review of the dry-run preview (ADR-007[legacy 040] §2), not
 // this heuristic. (Lowering the floor would false-positive on legit tokens; the design relies on the
 // human gate + propose-only + no raw-secret-read tool, not on perfect regex.)
 const BLOB_RE = /[A-Za-z0-9+/]{40,}={0,2}|[0-9a-fA-F]{40,}/g;

@@ -12,13 +12,14 @@ import { chatMsg, normalizeChatLang, type ChatLang } from '@/lib/chat-i18n';
 import { getAccount, validateAccountId } from '@/lib/accounts';
 import { pickGateway, classifyRoute, type RouteResult } from '@/lib/route';
 import { classifyPrompt, buildClassifierContext } from '@/lib/classifier';
-import { sanitizeHistory } from '@/lib/chat-context';
+import { sanitizeHistory, accountLabel } from '@/lib/chat-context';
+import { chatRegionScope } from '@/lib/account-regions';
 import { synthesizeStream } from '@/lib/synthesize';
 import { assistantAnswer, isProductHelpIntent } from '@/lib/assistant';
 import { sectionByKey } from '@/lib/sections';
 import { getCustomAgentContext } from '@/lib/catalog-source';
 import { isCustomAgentEnabled } from '@/lib/catalog';
-import { getEnabledIntegrations } from '@/lib/integrations';
+import { getEnabledIntegrationSelection } from '@/lib/integrations';
 import { pickCustomAgent, resolveAgent } from '@/lib/agent-resolver';
 import { recordCustomAgentTrace, recordChatInvoke } from '@/lib/trace';
 import { recordExchange } from '@/lib/chat-store';
@@ -26,12 +27,28 @@ import { currentAccountId, currentAccountAlias } from '@/lib/account';
 import { listConfiguredSchemas, renderSchemaForPrompt } from '@/lib/datasource-schema';
 import { listDatasources } from '@/lib/datasources';
 import { readJsonBounded, BodyTooLargeError } from '@/lib/http-body';
+import { buildPageContextBlock } from '@/lib/page-context-block';
 import { randomUUID, createHash } from 'crypto';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 180; // 콜드 Steampipe(≤35s) + 자기수정 + 장문 분석 스트림이 60s를 넘던 실측(2026-08-02) // long agent calls
 
 const MAX_PROMPT = 50_000;
+// A requested account the chat cannot use must be said aloud, not silently answered from the host.
+const ACCOUNT_SCOPE_NOTICE: Record<ChatLang, (id: string, reason: 'unavailable' | 'lookup_failed') => string> = {
+  ko: (id, r) => r === 'lookup_failed'
+    ? `계정 ${id} 정보를 확인하지 못해 이번 답변은 호스트 계정 기준입니다.`
+    : `계정 ${id}은(는) 등록되지 않았거나 비활성화되어 이번 답변은 호스트 계정 기준입니다.`,
+  en: (id, r) => r === 'lookup_failed'
+    ? `Account ${id} could not be verified, so this answer covers the host account.`
+    : `Account ${id} is not registered or is disabled, so this answer covers the host account.`,
+  zh: (id, r) => r === 'lookup_failed'
+    ? `无法验证账户 ${id}，本次回答基于主机账户。`
+    : `账户 ${id} 未注册或已禁用，本次回答基于主机账户。`,
+  ja: (id, r) => r === 'lookup_failed'
+    ? `アカウント ${id} を確認できなかったため、この回答はホストアカウントが対象です。`
+    : `アカウント ${id} は未登録または無効のため、この回答はホストアカウントが対象です。`,
+};
 const CUSTOM_POLICY_FAILURE_NOTICE: Record<ChatLang, { fallback: string; pin: string }> = {
   ko: {
     fallback: '커스텀 에이전트를 사용할 수 없어 이번 답변은 기본 에이전트로 라우팅합니다.',
@@ -59,6 +76,13 @@ const SSE_HEADERS = {
   Connection: 'keep-alive',
 } as const;
 
+
+const PAGE_BLOCK_OPEN = '<page_context source="site_flow">\n';
+const PAGE_BLOCK_CLOSE = '\n</page_context>';
+/** Length of the body inside a built page block (the wrapper's lead line and tags excluded). */
+function pageContextBodyLength(block: string): number {
+  return block.length - (block.indexOf(PAGE_BLOCK_OPEN) + PAGE_BLOCK_OPEN.length) - PAGE_BLOCK_CLOSE.length;
+}
 
 function json(obj: unknown, status: number) {
   return new Response(JSON.stringify(obj), { status, headers: { 'content-type': 'application/json' } });
@@ -304,7 +328,7 @@ export async function POST(request: Request) {
   const user = await verifyUser(request.headers.get('cookie'));
   if (!user) return json({ status: 'error', message: 'unauthenticated' }, 401);
 
-  let body: { prompt?: string; messages?: ChatMsg[]; section?: string; switchedFrom?: string; sessionId?: string; threadId?: string; lang?: string; accountId?: string };
+  let body: { prompt?: string; messages?: ChatMsg[]; section?: string; previousSection?: string; switchedFrom?: string; sessionId?: string; threadId?: string; lang?: string; accountId?: string; pageContext?: unknown };
   try {
     // bound BEFORE parse (App-Router has no default body cap → OOM guard); 512KB covers prompt + thread history
     body = (await readJsonBounded(request, 512_000)) as typeof body;
@@ -315,6 +339,16 @@ export async function POST(request: Request) {
   const prompt = typeof body.prompt === 'string' ? body.prompt : '';
   if (!prompt) return json({ status: 'error', message: 'prompt required' }, 400);
   if (prompt.length > MAX_PROMPT) return json({ status: 'error', message: 'prompt too large' }, 413);
+  // Optional on-screen context (the site flow view): untrusted client data, capped, defused and wrapped once here,
+  // then prepended to the LAST USER MESSAGE of the model payload only (user-turn data, never the system prompt /
+  // extraContext), and only when the request resolves to a built-in target (see `pageBlock` below). Routing/classifier
+  // input, the stored exchange and logs keep the original prompt. When the block would push the user message past
+  // MAX_PROMPT it is dropped (the user's text always wins; no error).
+  if (body.pageContext != null && typeof body.pageContext !== 'string') { // null = absent
+    return json({ status: 'error', message: 'pageContext must be a string' }, 400);
+  }
+  const builtPageBlock = buildPageContextBlock(body.pageContext ?? undefined);
+  const fittingPageBlock = builtPageBlock && prompt.length + builtPageBlock.length + 2 <= MAX_PROMPT ? builtPageBlock : undefined;
   // Sanitize ONCE at the boundary (bug fix, PR #138 review MINOR) — a malformed entry (non-array,
   // or non-string `content`) would otherwise throw deep inside the classifier/assistant history
   // renderers, silently degrading routing instead of failing loud or just being dropped.
@@ -371,7 +405,7 @@ export async function POST(request: Request) {
     const threadId = (typeof body.threadId === 'string' && THREAD_RE.test(body.threadId)) ? body.threadId : randomUUID();
     const enc = new TextEncoder();
     const t0 = Date.now();
-    const codegenModel = process.env.CODEGEN_MODEL_ID || 'global.anthropic.claude-sonnet-5';
+    const codegenModel = process.env.CODEGEN_MODEL_ID || 'global.anthropic.claude-sonnet-5-5';
     const stream = new ReadableStream({
       async start(controller) {
         controller.enqueue(enc.encode(': heartbeat\n\n'));
@@ -420,40 +454,54 @@ export async function POST(request: Request) {
   }
   // Hybrid classification is gated; explicit built-in pins bypass custom selection in both modes.
   const hybridOn = process.env.HYBRID_ROUTING_ENABLED === 'true';
-  // ADR-038 §5: a chip-switch resend marks the previous answer as a misroute candidate.
+  // ADR-003[legacy 038] §5: a chip-switch resend marks the previous answer as a misroute candidate.
   // Structured log → CloudWatch Logs (durable enough for the P4 semantic-routing corpus).
   if (hybridOn && typeof body.switchedFrom === 'string' && body.switchedFrom) {
     console.warn(JSON.stringify({ evt: 'misroute', from: body.switchedFrom, to: body.section ?? null, user: user.sub, promptLen: prompt.length }));
   }
+  // Follow-up continuity: a keyword-less follow-up stays on the section that answered the
+  // previous turn instead of the default catch-all. Only an active, gateway-backed built-in section
+  // qualifies — aws-data/collectors are local handlers that would just fail open to ops again.
+  const prev = typeof body.previousSection === 'string' ? body.previousSection : '';
+  const previous = prev && sectionByKey(prev)?.active && prev !== 'aws-data' && !collectorByKey(prev) ? prev : undefined;
   let route: RouteResult | null = null;
   let gateway: string;
   if (hybridOn) {
     // Bug fix: a context-dependent follow-up (e.g. "저걸 클러스터 안에서 어디서 쓰나" after a
     // CloudTrail/model-invocation question) read in isolation misroutes to the wrong/inactive
     // section — the classifier never saw the prior turn. Feed it a bounded excerpt of the
-    // client-supplied history; matchedSections(prompt) below is unaffected (raw prompt only).
+    // client-supplied history; matchedSections(prompt) below is unaffected (current prompt only, never history).
     route = await classifyRoute(prompt, body.section, {
       llmEnabled: true,
       classify: (p) => classifyPrompt(buildClassifierContext(history, p)),
+      previous,
     });
     gateway = route.primary;
   } else {
-    gateway = pickGateway(prompt, body.section);
+    gateway = pickGateway(prompt, body.section, previous);
   }
-  // ADR-031 custom agents. ADR-038 precedence: explicit pin > custom > classifier (spec §2.2).
-  // ADR-031 Phase 2: per-account Agent Space. No row ⇒ Phase-1 global behavior.
+  // ADR-004[legacy 031] custom agents. ADR-003[legacy 038] precedence: explicit pin > custom > classifier (spec §2.2),
+  // then the previous answering section (follow-up continuity) before the default catch-all.
+  // ADR-004[legacy 031] Phase 2: per-account Agent Space. No row ⇒ Phase-1 global behavior.
   // v1-parity multi-account target (v1 route.ts:926-930): an explicit body.accountId targets a
   // REGISTERED+ENABLED account (accounts table); anything else keeps the host default. The value
   // only ever reaches the agent payload/Agent-Space keying — never IAM decisions.
   let accountId = currentAccountId();
   let accountAlias = currentAccountAlias();
+  let accountScopeNotice = '';
   if (typeof body.accountId === 'string' && validateAccountId(body.accountId) && body.accountId !== accountId) {
-    const target = await getAccount(body.accountId).catch(() => undefined);
+    const target = await getAccount(body.accountId).catch(() => null); // null = lookup failed
     if (target?.enabled) {
       accountId = target.accountId;
       accountAlias = target.alias || undefined;
+    } else {
+      // The id is interpolated safely only because the enclosing branch required validateAccountId.
+      accountScopeNotice = `${ACCOUNT_SCOPE_NOTICE[lang](body.accountId, target === null ? 'lookup_failed' : 'unavailable')}\n\n`;
     }
   }
+  // Echoed on the meta frame and stored with the exchange so later turns can say which account
+  // each earlier answer was about (agent.py labels turns only when a thread spans accounts).
+  const turnAccount = accountLabel(accountId, currentAccountId());
   const pinIsBuiltin = !!(body.section && sectionByKey(body.section));
   const productHelpIntent = hybridOn && !body.section && isProductHelpIntent(prompt);
   // Builtin pins and product help do not consult or inherit custom policy.
@@ -470,7 +518,7 @@ export async function POST(request: Request) {
     customPinEnabled = customPinTarget
       ? (customAgents.some((a) => a.name === customPinTarget) && (await isCustomAgentEnabled(customPinTarget, { throwOnError: true })))
       : false;
-    // ADR-044 §2: a confirmed disabled/absent pin gets an honest message, never a fallback.
+    // ADR-003[legacy 044] §2: a confirmed disabled/absent pin gets an honest message, never a fallback.
     unavailablePin = !!customPinTarget && !customPinEnabled;
     // Recheck enablement after the fresh catalog read to catch a concurrent revocation.
     customPick = unavailablePin || productHelpIntent
@@ -495,6 +543,8 @@ export async function POST(request: Request) {
   // instead of an AgentCore gateway. Fail-open like the code route: Steampipe unreachable /
   // secret missing ⇒ one 'sql-unavailable' status line + normal routing below (ops home).
   let sqlUnavailable = false;
+  // NOTE: the aws-data/collector early returns below are dark (steampipeAvailable() is always false)
+  // and do not stream fallbackNotice/accountScopeNotice — wire them in if those paths ever return.
   if (routeKey === 'aws-data') {
     if (await steampipeAvailable()) {
       const threadId = (typeof body.threadId === 'string' && THREAD_RE.test(body.threadId)) ? body.threadId : randomUUID();
@@ -516,28 +566,31 @@ export async function POST(request: Request) {
     sqlUnavailable = true; // same honest '미가용 → 일반 라우팅' status frame as aws-data
     routeKey = 'ops';
   }
-  // ADR-039 P2: enabled egress-READ integrations contribute tools + bounded context (per-space scoped).
+  // ADR-007[legacy 039] P2: enabled egress-READ integrations contribute tools + bounded context (per-space scoped).
   // ingress + READ_WRITE contribute nothing here (writes go via the mutating gate).
   // P2-infra inc2: also carry connection details so the resolver can hand agent.py a live-connect list.
-  // allowPrivate = the per-account ADR-011 opt-in (no space ⇒ false). sigv4 service/region threading
+  // allowPrivate = the per-account ADR-007[legacy 011] opt-in (no space ⇒ false). sigv4 service/region threading
   // (same-account sigv4 integrations) is deferred with the rest of Q3-sigv4=C — api_key/bearer is live.
   const allowPrivate = space?.allowPrivateDatasource ?? false;
-  const enabledIntegrations = await getEnabledIntegrations(accountId);
+  const integrationSelection = await getEnabledIntegrationSelection(accountId);
+  const enabledIntegrations = integrationSelection.integrations;
   const egressReadIntegrations = enabledIntegrations
     .filter((i) => i.direction === 'egress' && i.capability === 'read')
     .map((i) => ({
+      id: Number(i.id), kind: i.kind, direction: i.direction, capability: i.capability,
       name: i.name, exposedTools: i.exposedTools, providedContext: i.providedContext,
       endpoint: i.endpoint ?? undefined, transport: i.transport ?? undefined,
       credentialsRef: i.credentialsRef ?? undefined, allowPrivate,
     }));
-  // ADR-040/041 — READ_WRITE integrations are surfaced PROPOSE-ONLY (prompt metadata, NOT live tools;
+  // ADR-007[legacy 040] — READ_WRITE integrations are surfaced PROPOSE-ONLY (prompt metadata, NOT live tools;
   // writes go through the human-gated /api/actions path). They never enter the resolver's tool union.
   const proposableWrites = enabledIntegrations
     .filter((i) => i.direction === 'egress' && i.capability === 'read_write')
     .map((i) => ({ name: i.name, writeActionRefs: i.writeActionRefs }));
   const spec = resolveAgent(routeKey, finalPolicyUnavailable || productHelpIntent ? [] : customAgents,
-    space, egressReadIntegrations, proposableWrites); // server-side enforcement
-  // ADR-044: cross-domain auto-synthesis (flag MULTI_ROUTE_SYNTHESIS_ENABLED, default OFF ⇒ unchanged
+    space, egressReadIntegrations, proposableWrites,
+    { mcpSelectionSuppressed: integrationSelection.mcpSelectionSuppressed }); // server-side enforcement
+  // ADR-003[legacy 044]: cross-domain auto-synthesis (flag MULTI_ROUTE_SYNTHESIS_ENABLED, default OFF ⇒ unchanged
   // single-route path). Only built-in multi-domain fans out — a pinned/picked custom agent stays single.
   // `fanGateways` is the ACTIVE subset of route.selected — the FINAL multi-domain decision is
   // `fanGateways.length >= 2` (gate MAJOR: re-derived from the live `active` flags here, so a stale
@@ -549,7 +602,7 @@ export async function POST(request: Request) {
   const fanGateways = (route?.selected ?? []).filter((s) => s.active && s.key !== 'aws-data' && !collectorByKey(s.key)).map((s) => s.key).slice(0, 3);
   const doFanout = synthOn && hybridOn && !customPick && !unavailablePin && spec.tier === 'builtin'
     && fanGateways.length >= 2;
-  // ADR-038 honest inactive handling: built-in section not live yet → no agent call (spec §2.3).
+  // ADR-003[legacy 038] honest inactive handling: built-in section not live yet → no agent call (spec §2.3).
   // Skipped on the fan-out path (every fanGateway is already active-filtered).
   const inactiveSection = !doFanout && hybridOn && spec.tier === 'builtin' && sectionByKey(spec.gateway)?.active === false
     ? sectionByKey(spec.gateway)! : null;
@@ -561,9 +614,21 @@ export async function POST(request: Request) {
   const inactiveWasPinned = inactiveSection != null && route?.method === 'pin';
   const useAssistant = hybridOn && !unavailablePin
     && (productHelpIntent || (inactiveSection != null && !inactiveWasPinned));
-  const fallbackNotice = !explicitPin && !productHelpIntent && finalPolicyUnavailable
-    ? `${CUSTOM_POLICY_FAILURE_NOTICE[lang].fallback}\n\n` : '';
-  const messages: ChatMsg[] = [...history, { role: 'user', content: prompt }];
+  const mcpSuppression = spec.tier === 'custom' && !useAssistant && integrationSelection.mcpSelectionSuppressed
+    ? { reasons: integrationSelection.mcpSuppressionReasons ?? ['denied'] } : undefined;
+  const mcpNotice = mcpSuppression ? (lang === 'ko'
+    ? '일부 외부 연결을 사용할 수 없어 도구 접근을 제한했습니다. 연결 상태를 확인하세요.\n\n'
+    : 'Some external connections are unavailable; tool access remains restricted. Check the connection status.\n\n') : '';
+  const fallbackNotice = mcpNotice + accountScopeNotice + (!explicitPin && !productHelpIntent && finalPolicyUnavailable
+    ? `${CUSTOM_POLICY_FAILURE_NOTICE[lang].fallback}\n\n` : '');
+  // The page block goes only to a built-in target (built-in gateway, fan-out of built-ins, the Bedrock-direct
+  // fallback, the AWSops Assistant); an ADR-004 custom agent (picked or pinned) never receives it.
+  const pageBlock = spec.tier === 'builtin' ? fittingPageBlock : undefined;
+  const agentPrompt = pageBlock ? `${pageBlock}\n\n${prompt}` : prompt;
+  // Audit breadcrumb for the paths that deliver the block to a model: its body length only (never text or a hash).
+  const pageMeta = pageBlock ? { pageContextChars: pageContextBodyLength(pageBlock) } : {};
+  // Model payload only (agent invokes + the Bedrock-direct fallback): the page block rides the last user turn.
+  const messages: ChatMsg[] = [...history, { role: 'user', content: agentPrompt }];
   // Thread persistence: adopt a well-formed client threadId, else mint one. Ownership is
   // enforced at write time by chat-store's owner-guarded upsert (forged ids just drop).
   const threadId = (typeof body.threadId === 'string' && THREAD_RE.test(body.threadId)) ? body.threadId : randomUUID();
@@ -581,9 +646,11 @@ export async function POST(request: Request) {
       threadId, userSub: user.sub, sessionId,
       promptTitle: prompt.slice(0, 40),
       userContent: prompt, assistantContent: fallbackNotice + assistantContent,
-      gateway: recordGateway, meta: extras ? { ...(exchangeMeta ?? {}), ...extras } : exchangeMeta,
+      gateway: recordGateway, meta: { ...(exchangeMeta ?? {}), ...(extras ?? {}), ...(mcpSuppression ? { mcpSuppression } : {}), account: turnAccount },
     }).catch(() => { /* store is never-throws by contract; belt-and-suspenders (P2 gate) */ });
   };
+  // Region scope for the agent's live reads — skipped on paths that never invoke an agent.
+  const regions = useAssistant || unavailablePin || inactiveSection ? undefined : await chatRegionScope(accountId);
 
   // Inject cached datasource schemas (the agent reads the cache) for the observability gateways —
   // for the single-route spec AND any matching gateway in a fan-out. 'observability' owns the
@@ -613,11 +680,12 @@ export async function POST(request: Request) {
       const meta = {
         gateway: useAssistant ? 'assistant' : spec.gateway,
         agentName: useAssistant ? 'AWSops Assistant' : spec.agentName,
-        tier: spec.tier, skillHashes: spec.skillHashes, threadId,
+        tier: spec.tier, skillHashes: spec.skillHashes, threadId, account: turnAccount,
+        ...(mcpSuppression ? { mcpSuppression } : {}),
         ...(useAssistant ? { assistant: true } : {}),
         // chips/via are suppressed on the assistant path (no section hand-off for a product answer).
         ...(route && !useAssistant ? { ranked: route.ranked, method: route.method } : {}),
-        // ADR-044: emit via/routes IMMEDIATELY from the attempt list (gate MINOR — never wait for
+        // ADR-003[legacy 044]: emit via/routes IMMEDIATELY from the attempt list (gate MINOR — never wait for
         // Promise.allSettled survivors, which would stall the badge/Thinking UX for the whole fan-out).
         ...(via ? { via, routes: fanGateways } : {}),
         ...(!useAssistant && spec.tier === 'custom' ? { customAgent: spec.agentName, spaceVersion: spec.spaceVersion } : {}),
@@ -627,7 +695,14 @@ export async function POST(request: Request) {
       if (sqlUnavailable) {
         controller.enqueue(enc.encode('event: status\ndata: ' + JSON.stringify({ phase: 'sql-unavailable' }) + '\n\n'));
       }
-      // ADR-044 §2: an explicit pin to a custom agent disabled/absent in this Agent Space gets an
+      if (mcpSuppression) {
+        controller.enqueue(enc.encode('event: status\ndata: ' + JSON.stringify({
+          phase: 'integration-unavailable', reasons: mcpSuppression.reasons,
+        }) + '\n\n'));
+      }
+      // Notices go out before every branch below (record() stores them with each answer).
+      if (fallbackNotice) controller.enqueue(enc.encode(`data: ${JSON.stringify({ delta: fallbackNotice })}\n\n`));
+      // ADR-003[legacy 044] §2: an explicit pin to a custom agent disabled/absent in this Agent Space gets an
       // HONEST message — never a silent fallback to keyword/classifier routing.
       if (unavailablePin) {
         const name = String(body.section).slice(0, 40);
@@ -639,31 +714,31 @@ export async function POST(request: Request) {
         controller.close();
         return;
       }
-      if (fallbackNotice) controller.enqueue(enc.encode(`data: ${JSON.stringify({ delta: fallbackNotice })}\n\n`));
       // AWSops Assistant: product/how-to answer grounded in the KB (Bedrock-direct), OR the graceful
       // fallback for an auto-routed inactive section — instead of the 🔒 dead-end.
       if (useAssistant) {
         // Bug fix: pass the client-supplied history along so the assistant fallback isn't a
         // context-blind one-off (previously dropped, causing "질문이 맥락 없이..." answers on
         // any follow-up that landed here — e.g. via the inactive-section degrade path above).
-        const text = await assistantAnswer(prompt, { history }); // Haiku, KB-grounded, never throws
+        // Haiku, KB-grounded, never throws; the page block (if any) sits in its user turn before <user_query>.
+        const text = await assistantAnswer(prompt, { history, ...(pageBlock ? { pageContext: pageBlock } : {}) });
         for (const c of chunk(text)) {
           if (request.signal.aborted) break;
           controller.enqueue(enc.encode(`data: ${JSON.stringify({ delta: c })}\n\n`));
           if (TYPE_DELAY_MS) await new Promise((r) => setTimeout(r, TYPE_DELAY_MS));
         }
-        if (!request.signal.aborted) record(text);
+        if (!request.signal.aborted) record(text, pageMeta);
         controller.enqueue(enc.encode('data: [DONE]\n\n'));
         controller.close();
         return;
       }
-      // ADR-044 cross-domain auto-synthesis: fan out over the selected built-in gateways, then merge.
+      // ADR-003[legacy 044] cross-domain auto-synthesis: fan out over the selected built-in gateways, then merge.
       if (doFanout) {
         const tf0 = Date.now();
         // gate CRITICAL: each gateway gets its OWN built-in invoke input (no shared primary spec).
         const settled = await Promise.allSettled(
           fanGateways.map((g) => invokeAgent({
-            gateway: g, messages, sessionId, accountId, accountAlias,
+            gateway: g, messages, sessionId, accountId, accountAlias, regions,
             extraContext: obs(g) ? datasourceSchemaContext : undefined, // cached schema reaches fanned monitoring/data agents too
             responseLanguage: lang,
           })),
@@ -686,7 +761,7 @@ export async function POST(request: Request) {
           controller.enqueue(enc.encode(`data: ${JSON.stringify({ delta: t })}\n\n`));
         }
         if (!request.signal.aborted) {
-          record(full); // don't persist a half-streamed, client-aborted answer
+          record(full, pageMeta); // don't persist a half-streamed, client-aborted answer
           void recordChatInvoke({ gateway: fanGateways[0] ?? spec.gateway, userSub: user.sub, elapsedMs: Date.now() - tf0, success: true, via });
         }
         controller.enqueue(enc.encode('data: [DONE]\n\n'));
@@ -726,16 +801,18 @@ export async function POST(request: Request) {
       const seenTools = new Set<string>();
       let model: string | undefined;
       let usage: TokenUsage | undefined;
+      let gateways: string[] = []; // cross-gateway handoff provenance (last non-empty list wins)
       try {
         for await (const ev of invokeAgentStreamDetailed({
           gateway: spec.gateway, messages, sessionId,
           systemPromptOverride: spec.systemPromptOverride,
           toolAllowlist: spec.toolAllowlist,
           agentName: spec.agentName, agentVersion: spec.agentVersion, skillHashes: spec.skillHashes,
-          accountId, accountAlias,
-          integrations: spec.integrations, // ADR-039 P2-infra inc2: live egress-READ MCP connections
+          accountId, accountAlias, regions,
+          integrations: spec.integrations, // ADR-007[legacy 039] P2-infra inc2: live egress-READ MCP connections
           extraContext: datasourceSchemaContext, // cached datasource schemas → agent reads the cache
           responseLanguage: lang, // v1-parity: UI language wins over question-language guessing
+          handoff: spec.tier === 'builtin', // cross-gateway handoff opt-in: built-in section agents only
         })) {
           if (request.signal.aborted) break;
           // Independent ifs, not else-if: AgentEvent's fields aren't guaranteed mutually
@@ -746,6 +823,7 @@ export async function POST(request: Request) {
           }
           if (ev.tool && !seenTools.has(ev.tool)) { seenTools.add(ev.tool); tools.push(ev.tool); }
           if (ev.model) model = ev.model;
+          if (ev.gateways?.length) gateways = ev.gateways;
           if (ev.usage) usage = ev.usage; // v1-parity per-answer token usage (cost footer)
           if (ev.toolInput) {
             // v1-parity: surface the generated query (SQL/PromQL/...) in the status line
@@ -765,13 +843,13 @@ export async function POST(request: Request) {
             const notice = chatMsg.fallbackNotice(lang);
             text = notice;
             controller.enqueue(enc.encode(`data: ${JSON.stringify({ delta: notice })}\n\n`));
-            for await (const d of bedrockDirectStream(prompt, history, { abortSignal: request.signal, responseLanguage: lang })) {
+            for await (const d of bedrockDirectStream(agentPrompt, history, { abortSignal: request.signal, responseLanguage: lang })) {
               if (request.signal.aborted) break;
               text += d;
               controller.enqueue(enc.encode(`data: ${JSON.stringify({ delta: d })}\n\n`));
             }
             if (!request.signal.aborted) {
-              record(text, { via: 'bedrock-direct-fallback' });
+              record(text, { via: 'bedrock-direct-fallback', ...pageMeta });
               void recordChatInvoke({ gateway: spec.gateway, userSub: user.sub, elapsedMs: Date.now() - t0, success: true, via: 'bedrock-direct-fallback' });
             }
             controller.enqueue(enc.encode('data: [DONE]\n\n'));
@@ -807,13 +885,14 @@ export async function POST(request: Request) {
         elapsedMs: Date.now() - t0,
         ...(provenance.tools.length ? { tools: provenance.tools } : {}),
         ...(provenance.model ? { model: getModelLabel(provenance.model) } : {}),
+        ...(gateways.length ? { gateways } : {}),
         ...(usage ? { usage } : {}),
         ...(costUsd !== undefined ? { costUsd: Number(costUsd.toFixed(6)) } : {}),
       };
       controller.enqueue(enc.encode(`event: meta\ndata: ${JSON.stringify(footerMeta)}\n\n`));
       // don't persist a half-streamed, client-aborted answer (same guard as the assistant/fanout paths)
       if (!request.signal.aborted) {
-        record(text, footerMeta);
+        record(text, { ...footerMeta, ...pageMeta });
         void recordChatInvoke({
           gateway: spec.gateway, userSub: user.sub, elapsedMs: Date.now() - t0, success: true,
           model: provenance.model, toolCount: provenance.tools.length, usage,

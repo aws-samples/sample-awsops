@@ -52,7 +52,7 @@ export default function IntentPanel() {
 
   const load = useCallback(async () => {
     const r = await fetch('/api/diagnosis/intent?status=draft');
-    if (r.ok) setDrafts(((await r.json()).intents ?? []).slice().sort(byDriftRisk));
+    if (r.ok) setDrafts(((await r.json()).intents ?? []).toSorted(byDriftRisk));
   }, []);
 
   useEffect(() => {

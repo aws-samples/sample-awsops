@@ -38,7 +38,7 @@ const TABS: { value: Tab; label: string }[] = [
   { value: 'cost', label: 'Cost' },
 ];
 
-// ADR-035 Rule 7: the deterministic K8sGPT analyzer fact (FACT half).
+// ADR-006[legacy 035] Rule 7: the deterministic K8sGPT analyzer fact (FACT half).
 interface AnalyzerResult {
   analyzer: string;
   resourceName: string;
@@ -47,7 +47,7 @@ interface AnalyzerResult {
   details: string;
   parentObject: string;
 }
-// ADR-035 Rule 8: analyzer_result (FACT) is kept structurally separate from
+// ADR-006[legacy 035] Rule 8: analyzer_result (FACT) is kept structurally separate from
 // llm_explanation (HYPOTHESIS — Haiku narration, may be null).
 interface DiagnosisFinding {
   analyzer_result: AnalyzerResult;
@@ -113,7 +113,7 @@ const COLUMNS: Record<Exclude<Tab, 'diagnosis' | 'cost'>, Column[]> = {
   ],
 };
 
-// ADR-035 Rule 8: the table surfaces ONLY the deterministic facts. The AI
+// ADR-006[legacy 035] Rule 8: the table surfaces ONLY the deterministic facts. The AI
 // hypothesis (llm_explanation) is shown distinctly in the detail panel below.
 const DIAGNOSIS_COLUMNS: Column[] = [
   { key: 'analyzer', label: 'Analyzer' },
@@ -149,6 +149,8 @@ function ScopedEksCluster({ cluster }: { cluster: string }) {
   const { tt } = useI18n();
   const [tab, setTab] = useState<Tab>('nodes');
   const [rows, setRows] = useState<Row[] | null>(null);
+  // Node provenance from the route, not row contents: an empty EC2/node-group read stays labelled.
+  const [nodesSource, setNodesSource] = useState<string | undefined>(undefined);
   const [nodeAgg, setNodeAgg] = useState<NodeResourceAgg[] | null>(null);
   const [nodePods, setNodePods] = useState<PodRow[] | null>(null);
   const [nodePodsErr, setNodePodsErr] = useState('');
@@ -173,7 +175,7 @@ function ScopedEksCluster({ cluster }: { cluster: string }) {
     setDiag(null);
     setErr('');
     try {
-      // ADR-035: the diagnosis endpoint returns {enabled,stale,findings:[...]},
+      // ADR-006[legacy 035]: the diagnosis endpoint returns {enabled,stale,findings:[...]},
       // NOT {rows}. Only the explicit flag-off payload identifies a disabled feature.
       if (tab === 'cost') return; // CostPanel fetches its own data
       if (tab === 'diagnosis') {
@@ -219,6 +221,7 @@ function ScopedEksCluster({ cluster }: { cluster: string }) {
         ? [...(d.rows as Row[])].sort((a, b) => Number(b.lastSeenTs ?? 0) - Number(a.lastSeenTs ?? 0))
         : (d.rows as Row[]);
       setRows(sorted);
+      setNodesSource(tab === 'nodes' && typeof d.source === 'string' ? d.source : undefined);
       if (podsP) {
         const pd = await podsP;
         if (!fresh()) return;
@@ -269,7 +272,7 @@ function ScopedEksCluster({ cluster }: { cluster: string }) {
     return out;
   }, [allRows, tab, ns, query]);
 
-  // ADR-035 Step 1: map each deterministic finding to a table row. The table
+  // ADR-006[legacy 035] Step 1: map each deterministic finding to a table row. The table
   // shows only the FACT columns; the full finding rides along under `_finding`
   // so the detail panel can render the HYPOTHESIS distinctly (Rule 8).
   const diagnosisRows = useMemo<Row[]>(() => {
@@ -456,6 +459,11 @@ function ScopedEksCluster({ cluster }: { cluster: string }) {
                   );
                 })()}
 
+                {tab === 'nodes' && nodesSource === 'aws-api' && (
+                  <div role="note" className="rounded-md bg-ink-50 px-3 py-2 text-[12px] text-ink-500">
+                    {tt('멤버 클러스터 노드는 Kubernetes nodes API 대신 EC2/노드그룹 API(등록된 멤버 읽기 역할) 기준입니다. kubelet 상태·레이블·테인트는 없고, allocatable은 인스턴스 타입 용량(상한)으로 표시되며 Fargate 노드는 제외됩니다.')}
+                  </div>
+                )}
                 {tab === 'nodes' && nodeAgg && nodeAgg.length > 0 && (
                   <Card title="노드 리소스" subtitle="Pod 요청 합계 대비 노드 allocatable (CPU 코어 · 메모리 MiB)">
                     <div className="flex flex-col gap-3">
@@ -516,6 +524,8 @@ function ScopedEksCluster({ cluster }: { cluster: string }) {
             podPending={(selectedNodePods ?? []).filter((x) => x.status === 'Pending').length}
             podFailed={(selectedNodePods ?? []).filter((x) => x.status === 'Failed').length}
             createdAt={selectedNode.createdAt}
+            ec2View={selectedNode.source === 'aws-api'}
+            capacityUnknown={selectedNode.capacityUnknown === true}
           />
           <NodePodsSection pods={selectedNodePods} error={nodePodsErr} />
           <NodeEniSection nodeName={selectedNode.name} cluster={cluster} />
@@ -532,7 +542,7 @@ function ScopedEksCluster({ cluster }: { cluster: string }) {
 }
 
 /**
- * DiagnosisDetailPanel — ADR-035 Rule 8 surface. Shows the DETERMINISTIC
+ * DiagnosisDetailPanel — ADR-006[legacy 035] Rule 8 surface. Shows the DETERMINISTIC
  * analyzer_result facts (high confidence) and, in a visually distinct block
  * below, the Haiku narration explicitly badged as an UNVERIFIED hypothesis.
  * Read-only: nothing here mutates the cluster.

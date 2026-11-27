@@ -36,13 +36,15 @@ export interface MultiLineTrendProps {
   height?: number;
   /** 'bar' renders grouped bars instead of lines (Explore Line/Bar toggle). */
   variant?: 'line' | 'bar';
+  allowDecimals?: boolean;
+  lineType?: 'linear' | 'monotone';
 }
 
 /**
  * MultiLineTrend — N overlaid lines with the shared palette (v1 parity: per-resource-type
  * inventory history). Tooltip rows are sorted by value desc; the legend wraps under the chart.
  */
-export default function MultiLineTrend({ title, right, data, xKey, series, height = 260, variant = 'line', interactiveLegend = false, legendGroups, defaultHidden }: MultiLineTrendProps) {
+export default function MultiLineTrend({ title, right, data, xKey, series, height = 260, variant = 'line', interactiveLegend = false, legendGroups, defaultHidden, allowDecimals = false, lineType = 'monotone' }: MultiLineTrendProps) {
   const c = useChartColors();
   const colorFor = (i: number) => c.palette[i % c.palette.length];
   const [hidden, setHidden] = useState<Set<string>>(() => new Set(defaultHidden ?? []));
@@ -61,7 +63,7 @@ export default function MultiLineTrend({ title, right, data, xKey, series, heigh
             <BarChart data={data} margin={{ top: 4, right: 8, bottom: 0, left: -12 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={c.grid} vertical={false} />
               <XAxis dataKey={xKey} tick={axisTick(c)} tickLine={false} axisLine={false} />
-              <YAxis tick={axisTick(c)} tickLine={false} axisLine={false} allowDecimals={false} />
+              <YAxis tick={axisTick(c)} tickLine={false} axisLine={false} allowDecimals={allowDecimals} />
               <Tooltip {...tooltipStyles(c)} itemSorter={(item) => -(Number(item.value) || 0)} />
               {series.filter((s) => isVisible(s.key)).map((s) => (
                 <Bar key={s.key} dataKey={s.key} name={s.label ?? s.key} fill={colorFor(indexOf.get(s.key)!)} isAnimationActive={false} />
@@ -71,7 +73,7 @@ export default function MultiLineTrend({ title, right, data, xKey, series, heigh
             <LineChart data={data} margin={{ top: 4, right: 8, bottom: 0, left: -12 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={c.grid} vertical={false} />
               <XAxis dataKey={xKey} tick={axisTick(c)} tickLine={false} axisLine={false} />
-              <YAxis tick={axisTick(c)} tickLine={false} axisLine={false} allowDecimals={false} />
+              <YAxis tick={axisTick(c)} tickLine={false} axisLine={false} allowDecimals={allowDecimals} />
               <Tooltip
                 {...tooltipStyles(c)}
                 itemSorter={(item) => -(Number(item.value) || 0)}
@@ -79,7 +81,7 @@ export default function MultiLineTrend({ title, right, data, xKey, series, heigh
               {series.filter((s) => isVisible(s.key)).map((s) => (
                 <Line
                   key={s.key}
-                  type="monotone"
+                  type={lineType}
                   dataKey={s.key}
                   name={s.label ?? s.key}
                   stroke={colorFor(indexOf.get(s.key)!)}

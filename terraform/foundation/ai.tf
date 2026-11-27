@@ -18,7 +18,7 @@ variable "ci_readiness_enabled" {
 
 variable "integrations_enabled" {
   type        = bool
-  description = "ADR-039 P2-infra inc2: grant the AgentCore runtime scoped Secrets Manager + KMS for egress integration credentials. Requires agentcore_enabled. Default false → no-op ($0, plan = No changes). PERSIST in live terraform.tfvars so a later full apply does not destroy these."
+  description = "ADR-007[legacy 039] P2-infra inc2: grant the AgentCore runtime scoped Secrets Manager + KMS for egress integration credentials. Requires agentcore_enabled. Default false → no-op ($0, plan = No changes). PERSIST in live terraform.tfvars so a later full apply does not destroy these."
   default     = false
 }
 
@@ -56,6 +56,28 @@ variable "mimir_vpc_enabled" {
   type        = bool
   description = "Attach the mimir-mcp Lambda to the private subnets so it can reach an in-cluster Mimir endpoint. Requires agentcore_enabled + integrations_enabled. Default false → no-op ($0); off = non-VPC. PERSIST in live terraform.tfvars."
   default     = false
+}
+
+variable "jaeger_vpc_enabled" {
+  type        = bool
+  default     = false
+  nullable    = false
+  description = "Attach the Jaeger query Lambda to private subnets. Requires agentcore_enabled and integrations_enabled; routing, DNS and target ingress must be operator-configured. Default false → no-op ($0). PERSIST in live terraform.tfvars."
+  validation {
+    condition     = !var.jaeger_vpc_enabled || (var.agentcore_enabled && var.integrations_enabled)
+    error_message = "jaeger_vpc_enabled requires agentcore_enabled and integrations_enabled."
+  }
+}
+
+variable "dynatrace_vpc_enabled" {
+  type        = bool
+  default     = false
+  nullable    = false
+  description = "Attach the Dynatrace environment API Lambda to private subnets for a private ActiveGate endpoint. Requires agentcore_enabled and integrations_enabled; routing, DNS and egress (including to hosted SaaS environments) must be operator-configured. Does not affect the official hosted MCP preset. Default false → no-op ($0). PERSIST in live terraform.tfvars."
+  validation {
+    condition     = !var.dynatrace_vpc_enabled || (var.agentcore_enabled && var.integrations_enabled)
+    error_message = "dynatrace_vpc_enabled requires agentcore_enabled and integrations_enabled."
+  }
 }
 
 variable "istio_vpc_enabled" {
@@ -177,13 +199,14 @@ resource "aws_iam_role_policy" "agentcore" {
   role  = aws_iam_role.agentcore[0].id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat(length(local.agentcore_model_resources) > 0 ? [
       {
         Sid      = "BedrockModelInvoke"
         Effect   = "Allow"
         Action   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
-        Resource = local.runtime_model_resources
-      },
+        Resource = local.agentcore_model_resources
+      }
+      ] : [], [
       {
         Sid       = "DiscoverGateways"
         Effect    = "Allow"
@@ -234,7 +257,7 @@ resource "aws_iam_role_policy" "agentcore" {
         Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
         Resource = "arn:aws:logs:${var.region}:${data.aws_caller_identity.current.account_id}:*"
       }
-    ]
+    ])
   })
 }
 
@@ -267,7 +290,7 @@ resource "aws_iam_role_policy" "official_mcp_credentials" {
   })
 }
 
-# ---- ADR-039 P2-infra inc2: egress integrations — dedicated CMK + scoped runtime grant ----
+# ---- ADR-007[legacy 039] P2-infra inc2: egress integrations — dedicated CMK + scoped runtime grant ----
 # Integration credentials (API keys / OAuth tokens) live in Secrets Manager under
 # ops/${project}/integrations/* encrypted with THIS dedicated key (isolated from the Aurora CMK).
 # All count-gated on integrations_enabled (default false → $0, plan = No changes). The agent.py
@@ -452,6 +475,42 @@ resource "aws_iam_role_policy" "agent_lambda_reader_scoped" {
 # awsops_web / awsops_worker / steampipe_reader) is NOT reachable on this path, and a password
 # secret is unavoidable. Terraform owns the password; `make migrate` pushes it into the DB role
 # (scripts/v2/migrate.mjs), so this secret stays the single source of truth.
+locals {
+  topology_reader_count = var.topology_entities_enabled ? local.ac_count : 0
+}
+
+# Operator provisions this fixed-purpose credential during standalone DB activation.
+data "aws_secretsmanager_secret" "topology_reader" {
+  count = local.topology_reader_count
+  name  = "ops/${var.project}/agent/topology-reader"
+}
+
+resource "aws_iam_role" "inventory_topology_reader" {
+  count              = local.topology_reader_count
+  name               = "${var.project}-inventory-topology-reader"
+  assume_role_policy = data.aws_iam_policy_document.agent_lambda_assume.json
+}
+
+resource "aws_iam_role_policy_attachment" "inventory_topology_logs" {
+  count      = local.topology_reader_count
+  role       = aws_iam_role.inventory_topology_reader[0].name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy" "inventory_topology_reader" {
+  count = local.topology_reader_count
+  role  = aws_iam_role.inventory_topology_reader[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      { Effect = "Allow", Action = "rds-data:ExecuteStatement", Resource = aws_rds_cluster.aurora.arn },
+      { Effect = "Allow", Action = "secretsmanager:GetSecretValue", Resource = [
+        aws_secretsmanager_secret.agent_sql_reader[0].arn, data.aws_secretsmanager_secret.topology_reader[0].arn
+      ] }
+    ]
+  })
+}
+
 resource "random_password" "agent_sql_reader" {
   count   = local.ac_count
   length  = 40
@@ -509,10 +568,10 @@ resource "aws_iam_role_policy" "agent_lambda_opensearch" {
   })
 }
 
-# ENI perms for the opensearch-mcp Lambda ONLY when it is VPC-attached (opensearch_vpc_enabled).
+# ENI permissions exist only while a managed Lambda VPC option is enabled.
 # Compound-gated: references agent_lambda[0], which exists only when agentcore_enabled → guard both.
 resource "aws_iam_role_policy" "agent_lambda_vpc_eni" {
-  count = var.agentcore_enabled && (var.opensearch_vpc_enabled || var.clickhouse_vpc_enabled || var.prometheus_vpc_enabled || var.loki_vpc_enabled || var.tempo_vpc_enabled || var.mimir_vpc_enabled || var.istio_vpc_enabled) ? 1 : 0
+  count = var.agentcore_enabled && (var.opensearch_vpc_enabled || var.clickhouse_vpc_enabled || var.prometheus_vpc_enabled || var.loki_vpc_enabled || var.tempo_vpc_enabled || var.mimir_vpc_enabled || var.jaeger_vpc_enabled || var.dynatrace_vpc_enabled || var.istio_vpc_enabled) ? 1 : 0
   name  = "${var.project}-agent-lambda-vpc-eni"
   role  = aws_iam_role.agent_lambda[0].id
   policy = jsonencode({
@@ -581,8 +640,10 @@ resource "aws_iam_role_policy" "task_agentcore_ssm" {
 }
 
 # v1-parity AgentCore console (web/app/agentcore + web/lib/agentcore-status.ts): read-only
-# control-plane status (runtime/gateways/targets/memory/interpreter). These List*/Get* control
-# actions have no resource-level scoping in AgentCore → "*", read-only by construction.
+# control-plane status (runtime/gateways/targets/memory/interpreter). List* actions such as
+# ListGateways have no resource type; Get*/ListGatewayTargets do support the `gateway` resource
+# type (Service Authorization Reference), but this read-only status console spans every
+# gateway/runtime/memory, so it keeps "*" — read-only by construction.
 resource "aws_iam_role_policy" "task_agentcore_status" {
   count = local.ac_count
   name  = "${var.project}-task-agentcore-status"
@@ -917,8 +978,10 @@ resource "aws_lambda_function" "agent" {
   function_name = "${var.project}-agent-${each.key}"
   # rds-mcp/inventory-read run under the dedicated reader role (agent_lambda_reader) — see the
   # PR #197 review comment above that role's definition. Every other slice is unaffected.
-  role             = contains(["rds-mcp", "inventory-read"], each.key) ? aws_iam_role.agent_lambda_reader[0].arn : aws_iam_role.agent_lambda[0].arn
-  runtime          = "python3.11"
+  role = each.key == "inventory-read" && var.topology_entities_enabled ? aws_iam_role.inventory_topology_reader[0].arn : (
+    contains(["rds-mcp", "inventory-read"], each.key) ? aws_iam_role.agent_lambda_reader[0].arn : aws_iam_role.agent_lambda[0].arn
+  )
+  runtime          = "python3.14"
   handler          = each.value.handler
   filename         = data.archive_file.agent[each.key].output_path
   source_code_hash = data.archive_file.agent[each.key].output_base64sha256
@@ -934,6 +997,9 @@ resource "aws_lambda_function" "agent" {
       # never the host) — otherwise host-account tool calls fail with AccessDenied.
       AWSOPS_HOST_ACCOUNT_ID = data.aws_caller_identity.current.account_id
       },
+      # Shared ExternalId that cross_account.py sends when assuming a target account's
+      # AWSopsReadOnlyRole. Empty (default) adds no variable, so stacks without it plan no change.
+      nonsensitive(var.agent_external_id != "") ? { AWSOPS_EXTERNAL_ID = var.agent_external_id } : {},
       # Connectors that read the single integrations secret get its exact TF-created name (no drift
       # from the Python default). notion-mcp also pins INTEGRATION_SLUG; clickhouse-mcp uses a fixed
       # SLUG in code. Both exist only when integ_count>0 so integrations[0] is safe.
@@ -945,6 +1011,10 @@ resource "aws_lambda_function" "agent" {
       # needs the cluster ARN, a credential secret, and the DB name. Round 8: that credential is the
       # least-privilege `awsops_sql_reader` secret, NOT the RDS-managed master secret (both this
       # connector and rds-mcp's execute_sql are pure SELECT paths).
+      each.key == "inventory-read" && var.topology_entities_enabled ? {
+        TOPOLOGY_ENTITIES_ENABLED  = "true"
+        TOPOLOGY_READER_SECRET_ARN = data.aws_secretsmanager_secret.topology_reader[0].arn
+      } : {},
       each.key == "inventory-read" ? {
         AURORA_CLUSTER_ARN            = aws_rds_cluster.aurora.arn
         AURORA_SECRET_ARN             = aws_secretsmanager_secret.agent_sql_reader[0].arn
@@ -967,13 +1037,15 @@ resource "aws_lambda_function" "agent" {
   }
 
   # Per-Lambda VPC opt-in: attach a connector to the private subnets ONLY when its <name>_vpc_enabled
-  # flag is set (opensearch/clickhouse/prometheus/loki/tempo/mimir for VPC-only datasources;
+  # flag is set (opensearch/clickhouse/prometheus/loki/tempo/mimir/jaeger/dynatrace for private datasources;
   # istio-read for a private-only EKS API endpoint). Off (default) → no vpc_config → non-VPC.
   dynamic "vpc_config" {
-    for_each = ((each.key == "opensearch-mcp" && var.opensearch_vpc_enabled) || (each.key == "clickhouse-mcp" && var.clickhouse_vpc_enabled) || (each.key == "prometheus-mcp" && var.prometheus_vpc_enabled) || (each.key == "loki-mcp" && var.loki_vpc_enabled) || (each.key == "tempo-mcp" && var.tempo_vpc_enabled) || (each.key == "mimir-mcp" && var.mimir_vpc_enabled) || (each.key == "istio-read" && var.istio_vpc_enabled)) ? [1] : []
+    for_each = ((each.key == "opensearch-mcp" && var.opensearch_vpc_enabled) || (each.key == "clickhouse-mcp" && var.clickhouse_vpc_enabled) || (each.key == "prometheus-mcp" && var.prometheus_vpc_enabled) || (each.key == "loki-mcp" && var.loki_vpc_enabled) || (each.key == "tempo-mcp" && var.tempo_vpc_enabled) || (each.key == "mimir-mcp" && var.mimir_vpc_enabled) || (each.key == "jaeger-mcp" && var.jaeger_vpc_enabled) || (each.key == "dynatrace-mcp" && var.dynatrace_vpc_enabled) || (each.key == "istio-read" && var.istio_vpc_enabled)) ? [1] : []
     content {
-      subnet_ids         = local.private_subnet_ids
-      security_group_ids = [aws_security_group.service.id]
+      subnet_ids = local.private_subnet_ids
+      # `service` keeps egress/NAT behavior unchanged. The dedicated PrivateLink client group is added ONLY
+      # to the connectors whose kind has a privatelink_endpoints entry (see privatelink.tf).
+      security_group_ids = concat([aws_security_group.service.id], [for k in local.privatelink_kinds : aws_security_group.privatelink_clients[k].id if "${k}-mcp" == each.key])
     }
   }
 }
@@ -992,8 +1064,9 @@ resource "aws_lambda_permission" "agent_agentcore" {
 # ---- outputs consumed by scripts/v2/agentcore/provision.py ----
 output "agentcore" {
   description = "AgentCore provisioning inputs for scripts/v2/agentcore/provision.py (null when disabled)."
-  value = var.agentcore_enabled ? {
+  value = var.agentcore_enabled ? merge({
     deployment_readiness_enabled = var.ci_readiness_enabled
+    chat_section_handoff_enabled = var.chat_section_handoff_enabled
     region                       = var.region
     project                      = var.project
     role_arn                     = aws_iam_role.agentcore[0].arn
@@ -1022,5 +1095,7 @@ output "agentcore" {
     # Bedrock/AgentCore/ECR. provision.py emits networkMode=VPC when these are present.
     subnets         = local.private_subnet_ids
     security_groups = [aws_security_group.service.id]
-  } : null
+    # Runtime model env: var.model_provider's profile (models.tf; empty for mixed) plus the
+    # mixed-only var.agentcore_chat_model_id chat rollback. Empty keeps agent.py's code defaults.
+  }, { model_env = tomap(merge(local.model_env, var.agentcore_chat_model_id == "" ? {} : { AGENT_MODEL_ID = var.agentcore_chat_model_id })) }) : null
 }

@@ -1,6 +1,6 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: fbab8a9741ea · generated-at: 2026-09-19 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: c0be07ee5b24 · generated-at: 2026-11-26 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
-> You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
+> You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by the external review panel (not a per-AI copy).
 
 # Runbooks — Reviewer Context
 
@@ -13,14 +13,20 @@
 Web image receipt/ECR proof precedes private migrations, including reuse; promotion retains that digest. Automatic DDL is expand-only; contract cutovers require a merge freeze, drained queues and explicit operator coordination. Legacy images without receipts use the separately approved `legacy-web-image-recovery.md` path with trusted digest/source evidence and schema approval, never a fabricated receipt or mutable-tag fallback.
 
 Operational playbooks organized by scenario, each following symptoms → diagnosis → action.
+`datasource-credential-isolation.md` requires native-default credential backfill before stricter
+explicit-ID reads roll out; missing or foreign credentials fail closed (ADR-007).
+`privatelink-observability.md` covers cross-account PrivateLink to datasources: acceptance stays manual, each endpoint admits only its own kind's
+connector client security group and no CIDR, and zone/record changes need `allow_dns_changes` and a two-step apply (ADR-007).
 Graph collection/projection, freshness and retained-evidence rollout contracts live in `source-sync-observability.md`. See
-`docs/runbooks/CLAUDE.md`'s index for the current runbook list (several are marked **v1
-(legacy)** — v2 has since replaced their procedure with a different mechanism; don't treat a
-legacy runbook's steps as the current operational path).
+`docs/runbooks/CLAUDE.md`'s index for the current runbook list. v1-era runbooks have been
+removed; flag any change that reintroduces a v1 procedure.
 
-`pr-review-head-images.md` defines two comprehensive reviewer reports, complete diff
-admission (6,000 lines/128 KiB), bounded chair input and distinct incomplete-review
-diagnostics, alongside staged HEAD image evidence and historical BASE context.
+`connector-target-sync.md` covers chat connector target registration (`connector_target_sync_enabled`), the ADR-005 owner-override exception: scope, one-stack-per-account caveat, enable/verify, reason codes and that disabling leaves already-written targets.
+
+`model-provider.md` covers the deploy-time model family (`model_provider`: mixed, bedrock_claude, bedrock_openai, anthropic_api), per-role mapping, scoped Bedrock/secret IAM, enable and rollback.
+
+`pr-review-head-images.md` defines the official Claude Code Action on Bedrock,
+exact-commit patch and HEAD image coverage, tool-result verification and failure handling.
 
 ## Deployment review checks
 - Web migrations force automatic checks of every pending file on initialized DBs. Automatic calls reject missing ledgers under the lock and never call `initializeEmptyDatabase`, regardless of the init flag. Standalone empty-only bootstrap applies historical SQL and reader sync first; function defaults (`now()`/`gen_random_uuid()`), ALTER/GRANT/views and non-transactional SQL need reviewed standalone migration, then a fresh web dispatch. No historical exemptions or automatic-baseline exception. Contention fails immediately under the shared lock. Read retries share a deadline and never retry writes; failed/replaced ECS deployment evidence is terminal. See `release-safety-primitives.md`.
@@ -71,7 +77,7 @@ diagnostics, alongside staged HEAD image evidence and historical BASE context.
 - `deployment-audit.md` separates manual dev observations under backend-bound and workload-read sessions. Preserve identity/resource guards and private cleanup. Web and AgentCore observations do not prove applied versions or invocation readiness; observed SQL-reader types never establish complete inventory.
 - `runtime-foundation.md` covers activation and the strict release controller: host-only default, explicit targets, pinned catalog, budgets, expected hard stops, measured feasibility, CLI and fixed-code triage. Dev/preview private discovery requires explicit full-plan rollout and DNS permission; public DNS/certificates remain blocked. `runtime-ecr-bootstrap` creates three repositories.
 - The dev profile enforces read-only flags and real login/DB/host-registry proof at manual plan/apply; direct dev host-only settings require it. Automatic PR/push plans do not run the credentialed host probe. Manual dev/preview deployment blocks listed core teardown/replacement/forget and has no retirement mode; main is outside this development policy. Configuration checks are not live-access proof.
-- Before promoting the IAM changes from dev to main, require reviewed dev apply and live gateway/chat, worker-diagnosis and tagged SFN/Fargate evidence. Mock plans do not satisfy this promotion gate; this dev PR does not authorize production apply.
+- Before promoting the IAM changes from dev to main, require reviewed dev apply and live gateway/chat, worker-diagnosis and tagged SFN/Fargate evidence. Mock plans do not satisfy this promotion gate, and a dev apply never authorizes a production apply.
 - `scripts/v2/ci_tf_assets.py` shares Terraform's locked layer installer. Prepare invalidates
   markers, removes stale regular ZIPs and rejects ZIP links. Pack requires known planned ZIPs;
   untargeted Lambdas are absent from targeted planned_values. TF_PLAN_ENC_KEY HMAC binds plan/SHA/scope and
@@ -153,7 +159,7 @@ diagnostics, alongside staged HEAD image evidence and historical BASE context.
   CLI; standalone health proves liveness only. Every dev Deploy Web release requires the
   authenticated runtime gate before service A publication. Existing-web prepare neither creates
   first web nor bypasses readiness; follow runtime adoption before the first gated release.
-- From the repo root, `bash scripts/v2/terraform-test.sh` runs Terraform 1.15.7 in an isolated
+- From the repo root, `bash scripts/v2/terraform-test.sh` runs Terraform 1.17.1 in an isolated
   tracked-file copy with fresh `TF_DATA_DIR`, `init -backend=false` and mocked providers.
   Never initialize a real backend for tests. Dependencies: `scripts/v2/requirements-test.txt`;
   Node smoke tests are also required by the shared merge script.
@@ -169,9 +175,8 @@ diagnostics, alongside staged HEAD image evidence and historical BASE context.
 - Do not let a runbook embed secrets, AWS account IDs, ARNs, or live domains.
 
 ## Known false-positives
-- A runbook marked **v1 (legacy)** describing a procedure that no longer matches v2's
-  architecture is intentional — it's kept for reference during the v1 decommission window
-  (ADR-016), not stale content to delete outright.
+- `v1-decommission.md` and `v1-to-v2-aurora-backfill.md` are v2 procedures that act on v1
+  resources and data; they are not v1 remnants.
 
 ## Authenticated development verification
 - Every dev release requires the full gate: apply `agentcore_enabled` and `ci_readiness_enabled`, then provision AgentCore.
@@ -202,7 +207,7 @@ diagnostics, alongside staged HEAD image evidence and historical BASE context.
   credential directory; normal finalizers own cleanup, which process/runner loss can prevent.
   Expose only phases/validated HTTP status,
   never Terraform diagnostics, bodies or cookies. Do not reset credentials to pass verification.
-- Auth fixtures require curl/OpenSSL, PyYAML and Terraform 1.15.7; missing tools fail the runner.
+- Auth fixtures require curl/OpenSSL, PyYAML and Terraform 1.17.1; missing tools fail the runner.
 
 Runtime probes accept verify-only full policy and release mode (nominal shared 20min cap vs 10min,
 clipped by absolute/proof budgets; no guaranteed twenty-minute controller wait).
@@ -219,13 +224,13 @@ distinction between operational degraded data and ineligible release evidence.
 Four lanes share Lambda/Steampipe limits; contention can fail the gate. Budgets are
 admission bounds, not guaranteed completion. Runtime foundation records a 43-type,
 57.461-second collection sample and its limits; it is not full live readiness.
-Require every pinned baseline name (currently 43, source-AST checked); valid growth
+Require every pinned baseline name (currently 49, source-AST checked); valid growth
 is allowed up to 128 and every returned type needs strict proof. Both modes default
 to the enabled host only; explicit applied targets require exact enabled registration.
 Collect additionally requires measured SQL reachability with zero unreachable accounts
 and fresh account-bound EC2/CloudFront known-member proof. Explicit scope preserves null for host-only/unmeasured
 counts; CI permits host-only/null only for five source-AST-pinned SDK types, not
-43-type coverage for every member. Only Terraform onboarding
+49-type coverage for every member. Only Terraform onboarding
 preflight permits approved subsets; apply reads the restored plan, not a newer secret.
 Runtime release stays exact. Preserve isolated
 AWS CLI environments, first chronological terminal failure and stopped admission;
@@ -263,13 +268,14 @@ Graph reads and rebuild/publication transactions share at most two admissions pe
 
 Graph execution validates typed publication counts, fixed reasons and the current selfInfraComplete flag. Infra reserves self in its100-account budget. Complete self context supports normal trace; published stale/degraded self supports only telemetry-derived partial trace with no infra correlation, never healthy or unproven-empty publication. Other missing/bad self outcomes record a non-publishing not_attempted state. Member gaps remain fleet-wide incomplete/failure evidence. Signaled registry failures and unexpected loader exceptions use the non-publishing recorder without invented counts/windows. CLI exits 1 for execution/registry/cleanup failure, 2 for retained/skipped/degraded/incomplete work and otherwise 0. These graph outcomes do not replace full runtime release proof.
 
-Changed HEAD image review uses the shared static-raster format table, source/render lineage
-and bounded decoding. Both comprehensive vendor reports and chair must declare required coverage; explicit
-unavailable entries block. Response presence and unusable reports remain separate;
-see `pr-review-head-images.md`. No new tool or IAM grants.
+Changed HEAD image review uses the shared static-raster format table, source/render
+lineage and isolated decoding. The action checks each assigned image against the SDK
+Read trace. Unavailable evidence blocks the check. See `pr-review-head-images.md`.
 
 ## Isolated review codec
 
 `review-codec-sandbox.md` defines the standalone Docker/Pillow confinement and cleanup
 contract. Tests require Docker and prepared codec state; skipped confinement is not a pass.
 It adds no AWS/IAM/model grants and does not wire privileged PR review by itself.
+
+`custom-mcp-governance.md` defines default-off MCP preparation, per-row secret/version attestation, durable audit and required invocation-principal evidence. Source presence is not ADR acceptance or activation. Native query datasource rows retain existing controls; vendor-labelled MCP connections do not bypass governance.

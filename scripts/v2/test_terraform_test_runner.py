@@ -20,7 +20,7 @@ class TerraformTestRunnerTests(unittest.TestCase):
                 "import json, os, pathlib, sys\n"
                 "cwd=pathlib.Path.cwd()\n"
                 "if sys.argv[1:]==['version','-json']:\n"
-                " print(json.dumps({'terraform_version':'1.15.7'})); sys.exit(0)\n"
+                " print(json.dumps({'terraform_version':'1.17.1'})); sys.exit(0)\n"
                 "with open(os.environ['TF_FIXTURE_LOG'],'a') as log:\n"
                 " log.write(json.dumps({'args':sys.argv[1:],'cwd':str(cwd),\n"
                 "  'files':[str(p.relative_to(cwd)) for p in cwd.rglob('*') if p.is_file()],\n"

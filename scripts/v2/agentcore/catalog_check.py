@@ -5,6 +5,9 @@ Asserts the invariants for scripts/v2/agentcore/catalog.py:
   - every TARGETS `gateway` is a known GATEWAYS short-key;
   - every tool has a non-empty `name` and `description`;
   - every tool `inputSchema` is a dict with type == 'object';
+  - every schema node uses only the keys AgentCore Gateway's SchemaDefinition accepts
+    (type/description/properties/required/items) — other JSON Schema keywords fail provisioning
+    or are stripped and reported as drift on every run;
   - NO tool carries `target_account_id` (provision.py injects it);
   - (ADR-017) every MCP_SERVER_TARGETS `gateway` is a known GATEWAYS short-key, `preset_key` is
     unique, and `auth.mode` is one of "api_key"/"none" with the fields that mode requires;
@@ -17,6 +20,7 @@ import sys
 import catalog
 
 GATEWAYS = set(catalog.GATEWAYS)
+SCHEMA_KEYS = {"type", "description", "properties", "required", "items"}
 TARGETS = catalog.TARGETS
 
 errors = []
@@ -52,6 +56,20 @@ for target_name, entry in TARGETS.items():
             continue
         if schema.get("type") != "object":
             errors.append(f"{target_name}/{name}: inputSchema.type must be 'object'")
+
+        def _check_keys(node, path):
+            if not isinstance(node, dict):
+                errors.append(f"{path}: schema node must be a dict")
+                return
+            extra = sorted(set(node) - SCHEMA_KEYS)
+            if extra:
+                errors.append(f"{path}: unsupported SchemaDefinition keys {extra}")
+            for key, child in (node.get("properties") or {}).items():
+                _check_keys(child, f"{path}.{key}")
+            if "items" in node:
+                _check_keys(node["items"], f"{path}[]")
+
+        _check_keys(schema, f"{target_name}/{name}")
 
         props = schema.get("properties", {})
         if not isinstance(props, dict):

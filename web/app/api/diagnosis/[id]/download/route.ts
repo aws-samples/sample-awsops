@@ -47,7 +47,7 @@ export async function GET(req: Request, { params: pendingParams }: { params: Pro
   try {
     const r = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
     const bytes = await r.Body!.transformToByteArray();
-    return new Response(bytes, {
+    return new Response(new Uint8Array(bytes), {
       status: 200,
       headers: {
         'Content-Type': CONTENT_TYPE[format],

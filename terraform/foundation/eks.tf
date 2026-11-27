@@ -19,15 +19,28 @@ resource "aws_eks_access_entry" "web" {
 }
 
 # Existing host web-role association. Member roles are onboarded separately by their owner
-# with AmazonEKSViewPolicy plus nodes-only RBAC (web/lib/eks-member-rbac.ts); this Terraform
-# resource does not grant member access. View includes namespaces but cannot list nodes.
+# with an Access Entry + AmazonEKSViewPolicy only (no Secrets, no RBAC step); this Terraform
+# resource does not grant member access. View includes namespaces but cannot list nodes, so
+# member node rows come from EC2/node-group read APIs (web/lib/eks-aws-nodes.ts).
 # The host retains AdminView, whose read rules cover all Kubernetes resources.
 # It can read Secrets, but the BFF only proxies an allow-listed set of kinds
 # (nodes/pods/deployments/services/namespaces/events/endpoints + explorer kinds replicasets/
 # daemonsets/statefulsets/jobs/pvcs/configmaps[METADATA-ONLY]/ingresses[routing metadata only] in eks-incluster.ts isKind/KIND_PATH)
-# — Secret objects and ConfigMap values never transit; tests pin this boundary.
-# ⚠️ This allow-list is the single line of defense behind AdminView: ANY new kind added
-# to eks-incluster.ts MUST update this comment + the negative-kind test in the same PR.
+# — on these kind-addressed paths Secret objects are never requested, the configmaps list
+# returns a key count only and configmaps describe returns key names with redacted values;
+# tests pin this boundary.
+# db-refs (web/lib/eks-db-refs.ts, served by GET /api/eks/[cluster]/db-refs) is a fixed read
+# path outside that kind allow-list. With the same per-cluster credential (host AdminView,
+# member View) it reads the Pod list and the ConfigMaps those Pods reference, and scans Pod
+# env values and the referenced ConfigMap values on the server for managed-datastore
+# hostnames. Its response carries only the matched hostnames (with workload, source and
+# inventory match) and the NAMES of referenced Secrets. Everything else in the scanned
+# values is discarded on the server and never returned by that path, and the path never
+# requests a Secret object (both pinned by web/lib/eks-db-refs.test.ts and the db-refs
+# route tests); it logs no value.
+# ⚠️ This allow-list is the single line of defense behind AdminView for kind-addressed reads:
+# ANY new kind added to eks-incluster.ts, and ANY change to what the db-refs path reads or
+# returns, MUST update this comment + the negative-kind test in the same PR.
 resource "aws_eks_access_policy_association" "web_view" {
   for_each      = toset(var.onboard_eks_clusters)
   cluster_name  = each.value
@@ -66,7 +79,7 @@ output "onboarded_eks_clusters" {
 # ── EKS auto-register (EventBridge → Lambda → eks_registrations) ─────────────
 # v1 "Register kubeconfig"의 완전 자동화: 운영자가 CLI로 access entry + AdminViewPolicy를
 # 연계하면 CloudTrail 이벤트를 EventBridge가 잡아 Aurora 등록 리스트에 기록한다 (버튼 불요).
-# AWS 리소스를 변경하지 않는 관찰-전용 자동화 (ADR-029 reversal과 무충돌).
+# AWS 리소스를 변경하지 않는 관찰-전용 자동화 (legacy ADR-029 reversal과 무충돌, ADR-005 동결 유지).
 # Requires workers_enabled=true (pg8000 layer + VPC plumbing 재사용).
 
 locals {
@@ -130,7 +143,7 @@ resource "aws_lambda_function" "eks_auto_register" {
   count            = local.ear
   function_name    = "${var.project}-eks-auto-register"
   role             = aws_iam_role.eks_auto_register[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   handler          = "auto_register.handler"
   filename         = data.archive_file.eks_auto_register[0].output_path
   source_code_hash = data.archive_file.eks_auto_register[0].output_base64sha256

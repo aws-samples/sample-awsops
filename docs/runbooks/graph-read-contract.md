@@ -4,6 +4,49 @@
 
 Missing graph clocks can mean legacy rows without collection state; missing metadata is unknown, not collection failure. A stale publication can have a newer attempt or failed producer. A busy/failed read describes the API, not a collection outcome.
 
+### Missing inference dependencies
+
+Check that the application's telemetry store is registered and has a ready graph
+query before interpreting an absent service. The standard ClickHouse adapter
+aggregates the whole bounded window; a deployment still using the older raw-span
+adapter can lose low-volume calls behind health traffic.
+
+Outbound runtime/model calls also require a `CLIENT` span kind. A table without
+`SpanKind` leaves that classification unknown and cannot establish those outgoing
+calls; resource-side `hosts` observations may still be present.
+
+Client spans with a valid `agentcore.runtime.arn` create a reported runtime
+destination even without a server span. A reporting service with the same valid
+runtime resource ARN can connect through a `hosts` relationship when its account
+and region do not conflict. These joins remain isolated by source and environment.
+Explicit `gen_ai.provider.name`/`gen_ai.system`, requested model and endpoint
+attributes describe a requested model dependency. They do not prove successful
+inference, the final provider behind a Gateway, or an executing model's region.
+Unknown endpoints remain caller-local. Runtime/model cards label the identity as
+an unverified telemetry claim; no inventory ownership follows from it.
+
+Producers must supply Kubernetes resource identity for Pod correlation and
+runtime resource identity for AgentCore. Do not assign Kubernetes identity to
+every span received by a shared collector. No prompts, completions or request
+bodies are required by the inference graph mapper.
+
+Verify from `web/`:
+
+```bash
+npx vitest run lib/inference-topology.test.ts lib/trace-source.test.ts app/topology/services/page.test.tsx
+```
+
+After the reviewed deployment, inspect the registered source, fresh collection
+state and one approved synthetic request. A keep-alive HTTP 200 is not model
+execution proof.
+
+The matching SQL-reader projection is delivered by
+`01M7F17PJXXY3P2T3TGDJSF8H7_trace_inference_claim_provenance.sql`. Run it through
+the reviewed standalone migration path before web/Lambda release; views and
+grants are not admitted by automatic web migrations. The MCP and HTTP readers
+also project retained runtime/model claims at read time, preserving forced
+provenance and excluding stored ownership or raw provider content.
+
 ### Placement and live VPC connections
 
 `/topology/infra` defaults to the persisted placement view from
@@ -28,9 +71,10 @@ disabled timer from legacy/missing state. A successful live connectivity read
 does not prove that a materialized graph rebuild ran. The placement view's
 **Open VPC connection graph** empty-state action opens the VPC tab, which loads
 inventory choices only until an explicit connection query. Clicking a placement
-VPC node passes its raw ID; the tab queries only after resolving exactly one
-current-scoped inventory choice. Qualified links from the VPC section preserve
-the account/region/VPC selection key. See the
+VPC node passes its account/region/VPC selection key when that scope is known;
+regionless legacy nodes pass their raw ID. The tab queries only after resolving
+exactly one current-scoped inventory choice. Qualified links from the VPC section
+also preserve the selection key. See the
 [VPC connectivity reference](../reference/vpc-connectivity.md) for identity,
 lifecycle, display caps and partial-result semantics.
 
@@ -48,6 +92,44 @@ COMMIT settles by its server/transport response, without forced release or a gue
 VPC/subnet/SG container kinds first so resource IDs cannot alphabetically exclude all placement targets. Read limits and
 500/503 failures are disclosed separately from collector status.
 PostgreSQL 17 is required for the total transaction timeout.
+
+Placement nodes with a known inventory region use
+`<kind>:@<storage-account>:<region>:<resource-id>` identities. Storage account is
+the inventory query scope (`self` or a member ID), not telemetry ownership.
+This separates same-named regional resources and reused network IDs. Regionless
+legacy records retain their old IDs; do not infer a missing region. Account-union
+responses additionally wrap every saved node ID as `@<storage-account>/<saved-id>`
+and constrain each edge's endpoints to visible nodes in that same account.
+The read wrapper also isolates legacy publications before a normal rebuild.
+
+Unwrapped focused HTTP reads combine exact-ID and `meta.legacyId` matches, deduplicated
+by storage account and saved node ID, before resolving a selection. This also
+discloses ambiguity when a retained legacy publication coexists with a rebuilt
+scoped publication or a regionless node has a regional sibling.
+`selection.status` is `resolved`, `not_found` or `ambiguous`;
+ambiguity returns no graph and at most two canonical choices with
+`candidates_truncated` disclosing additional candidates. A resolved selection
+includes `selection.account_id` and `resolved_id`. Focused union reads use that
+one account's graph/state; this is not whole-fleet collection proof. A wrapped
+root cannot override an explicitly different selected account.
+
+Canonical choices always wrap their saved ID with the storage account, even in
+a single-account response. An explicit wrapped ID selects its exact saved row;
+only an absent exact row falls back to legacy aliases for compatibility after a
+rebuild. This lets a regionless saved row be selected independently of its
+regional siblings instead of returning the same ambiguity again.
+
+Placement VPC navigation preserves its full account/region/raw-ID selection key.
+The resource page supports existing uniquely resolvable links and displays
+account/region beside scoped node labels. Previously collapsed records require
+the next separately authorized normal rebuild; reader changes cannot reconstruct
+inventory records that an old publication already merged.
+
+Consumers of saved graph identities, including gated RCA queries and network-path
+validation artifacts, must treat scoped IDs as opaque graph keys. Existing external
+labels or saved queries using legacy IDs need explicit mapping; the graph does not
+rewrite external labels. A name matching multiple regional resources cannot establish
+one network-path endpoint and remains a hypothesis until scope disambiguates it.
 
 The reader supports flow, infra and trace metadata. Missing state remains unknown;
 an account union does not borrow the host's publication clock. Inventory publication is implemented in `web/lib/graph-store.ts`; it requires the separately
@@ -116,7 +198,9 @@ budgets (excluding the result envelope). Flow projection preserves listener/API-
 consumed from `meta.row`. Target-health arrays retain every Id, Port and State in order while dropping
 unconsumed diagnostic fields. A row withheld by its own byte limit does not consume the
 later-row budget. `truncatedTypes` identifies incomplete payload types in the same snapshot;
-only those source item counts become unknown. Any truncation still withholds publication.
+only those source item counts become unknown. Any truncation of a core source still withholds
+publication. Enrichment types (below) sort after core types, so the caps cut them first; a cut
+that reaches only enrichment types withholds those types whole and leaves the core input intact.
 A readable snapshot can exceed the caller's graph-size limit; these bounds do not promise
 an unlimited graph. Inspect the affected type's paginated Inventory view when a cap is hit. Request and background transaction
 helpers share two admissions per pool, reserving the third ordinary slot for authentication;
@@ -181,12 +265,30 @@ Oversized valid Tempo children keep a bounded structured OTLP projection and can
 
 The shared query normalizer carries collection status into Explore. Marked partial, unknown or failed empty responses show an uncertainty/failure note instead of an ordinary empty-result claim; useful rows remain visible with the same disclosure. Scalar format failures remain distinct from empty responses. Non-boolean truncation metadata is unverified, never silently interpreted as complete output.
 
+### Whole-window ClickHouse aggregates
+
+The ClickHouse adapter for the catalog's exporter-schema template reads node groups,
+parent→child pairs and (when present) span links as whole-window aggregates; see
+[trace graph sources](../api-reference.md#trace-graph-sources). The aggregates form one source
+read. A failed aggregate query (including one that exceeds the connector's `max_execution_time`)
+falls back to the bounded newest-span reader for that rebuild and is disclosed as
+`incomplete_collection`, so a busy table degrades to sampling instead of retaining a frozen graph;
+a malformed response envelope fails the read. Nodes therefore never publish from a partial set of
+aggregates. Malformed individual rows are skipped as partial evidence, and each aggregate needs its
+own empty proof: confirmed nodes with an unproven-empty pair query publish as `partial` with
+`empty_not_confirmed`. Row limits disclose `cap_reached` like other bounded sources. The join sides
+project only the sorted identity attributes. Node-cap selection keeps edge endpoints together.
+The adapter and builder contracts run without PostgreSQL:
+`cd web && npx vitest run lib/trace-source.test.ts lib/trace-graph.test.ts lib/graph-store-trace.test.ts lib/graph-sources.test.ts`.
+
 ## Rebuild capacity
 
 Flow and infra input allow 8192 rows within the same bounded read envelope. The 64KiB-per-row and 8MiB projected-data/identifier limits still apply, as do the
 4000-node/8000-edge/8MiB graph limits. A source-proof or capacity failure retains last-good data.
 All listed sources feed the builders: a failed/missing source cannot be dropped to authorize replacement,
 and elapsed retentions never authorize an unproven sweep. Larger generations need a separately reviewed capacity path.
+
+**Enrichment sources.** The one exception is an explicit enrichment tier that only adds detail to nodes built from core sources. Flow enrichment is `eni`, `rds`, `rds_cluster`, `rds_proxy`, `vpc_endpoint` and `nat_gateway`; it resolves load-balancer IP-target ownership. Infra enrichment is `rds_cluster` and `rds_proxy`; it adds DB endpoint nodes for trace binding. These types are evaluated outside `details.sources` and kept in the unprojected `details.enrichmentSources`. A missing, failed, running, unconfirmed, stale or capped enrichment source is dropped whole. The resolver receives it as incomplete, so lookups report `owner_inventory_incomplete` and RDS placement inference (which needs `rds` and `rds_proxy`) is not made. Dropping enrichment never changes the publication status, freshness or reason vocabulary. A core source keeps the rule above. These rules describe the materialized graph only. The live `/topology` page reads `eni`, `vpc_endpoint` and `nat_gateway` itself, accepts them only from a succeeded sync, and never reads the RDS sources: it passes them to the resolver as incomplete, so RDS placement inference happens only in the saved graph. A Lambda ENI is attributed by its description, `AWS Lambda VPC ENI-<function>` (current) or the same with a UUID suffix (legacy); a UUID-tailed description is read both ways. An exact function-name match is an `inferred` owner; when both readings name a synced function the result is `owner_ambiguous`, and when only one matches but the Lambda read is incomplete it is `owner_inventory_incomplete`, because the other reading cannot be ruled out. A name with no match in a complete Lambda read is `owner_not_synced`.
 
 ## Browser recovery and source evidence
 
@@ -237,7 +339,7 @@ healthy evidence. Qualified empty/unproven telemetry retains the previous graph.
 Failed, retained, skipped or unattempted host infra still withholds trace collection.
 A clean confirmed-empty host publication is valid; zero nodes alone are not proof.
 Member-only gaps remain in fleet-wide counts/reasons and CLI exit 1/2. None of these
-presentation rules relaxes the strict 43-type, zero-unknown runtime release gate.
+presentation rules relaxes the strict 49-type, zero-unknown runtime release gate.
 
 | Exact diagnostic | Meaning and next check |
 |---|---|
@@ -320,6 +422,17 @@ budgets remain unchanged. The 15-minute cadence does not refresh inventory by
 itself or relax source freshness limits: `INVENTORY_STALE_AFTER_MINUTES` and the
 existing source-quality/clock rules still apply. These steps describe operator
 work to perform; timer activation and a live release require separate evidence.
+
+The timer and the inventory sync share the 15-minute cadence, so a web restart can place
+every tick while an inventory producer is still `running`; each tick then retains flow/infra
+and skips trace. When a flow or infra attempt is withheld while a producer is `running`, the
+rebuild reports `inventory_running` and the timer starts one retry chain in 2-minute steps. The
+chain covers the inventory sync Lambda's 420-second budget plus one step (four retries at a
+15-minute interval), stops at the first cycle that no longer waits, ends at least one step
+before the next regular tick, and is never started twice concurrently. Intervals under five
+minutes do not retry, because their regular ticks already land outside a producer pass. The
+regular interval is unchanged. Logs show `[graph-rebuild] infra: {... "reasons":["inventory_running"]}`
+for each waiting cycle.
 
 ## Verification commands
 
@@ -411,8 +524,10 @@ repeatable-read transaction.
 
 Omitted or null `resource_id` selects the whole class. A supplied string is trimmed
 before lookup and echo; empty, non-string or over-4096-character values return 400.
-Exact canonical IDs take precedence. The raw-ID fallback matches only the suffix
-after the first kind prefix, so use canonical IDs for composite/multi-segment nodes.
+Exact canonical IDs take precedence. The raw-ID fallback matches the suffix after
+the first kind prefix, and additionally recognizes raw and legacy kind-prefixed
+IDs for scoped placement identities. Duplicate regional candidates remain ambiguous.
+Use canonical IDs for other composite/multi-segment nodes.
 The root and its incoming/outgoing one-hop neighbours are selected before the node cap.
 
 | Field | Reader meaning |
@@ -425,6 +540,12 @@ The root and its incoming/outgoing one-hop neighbours are selected before the no
 | `truncation.edges` | The edge limit or node cap omitted applicable valid edges; a capped isolated node alone does not imply an omitted edge |
 | `collection.readOutcome` | Reader-only `state_read_failed` or `publication_changed`; never a stored `failureReason` |
 | `collection.snapshotConsistent` | Only `false` is emitted, when flow/infra verification fails or observes a publication change; absence is not a consistency guarantee |
+| `scope.account`, `scope.inventory_key` | Always `host` / `self`: reads never switch to the requested account |
+| `scope.requested_account_id`, `scope.requested_account_served` | Present only when another account was requested, a 12-digit ID or `an unrecognized account`; `requested_account_served` is always `false` |
+
+When `scope.requested_account_served` is `false`, a scope warning goes first in
+`warning`, ahead of any collection or selection warning. `query_inventory`,
+`inventory_summary` and `find_unused_resources` carry the same `scope` block.
 
 Edges require both endpoints in the returned node set. When nodes are capped, a
 bounded `EXISTS` check detects applicable edge loss; dangling records are excluded.
@@ -479,8 +600,8 @@ unset GRAPH_TEST_POSTGRES_SOCKET
 ```
 
 Alternatively, `GRAPH_TEST_POSTGRES_SOCKET` may point at that disposable server's
-Unix-socket directory. This path requires `pg8000` (validated with 1.31.5); install it
-in the test environment with `python3 -m pip install pg8000==1.31.5`. The socket mode
+Unix-socket directory. This path requires `pg8000` (validated with 1.31.6); install it
+in the test environment with `python3 -m pip install pg8000==1.31.6`. The socket mode
 takes precedence when both variables are present. The server must carry the same
 sentinel and must be dedicated to these destructive fixtures.
 
@@ -522,5 +643,49 @@ those rollout steps automatically.
 `agent/lambda/test_collection_boundaries.py`,
 `agent/lambda/test_graph_source_producer_contract.py`,
 `agent/fixtures/tempo-topology-contract.json`, `agent/fixtures/query-topology-contract.json`.
-ADR-005 (read-only product), ADR-004 §7 (SQL-reader projection), ADR-043 (graph reads;
+ADR-005 (read-only product), ADR-004 §7 (SQL-reader projection), ADR-010[legacy 043] (graph reads;
 decision bodies are maintained upstream).
+
+## Unified service snapshot pilot
+
+The host's service graph is available at `/topology?lens=service` when the pilot is enabled. The Web API and the AgentCore inventory-read tool (`get_topology(class="service")`) call `sql_reader.service_topology_read` on the same Aurora snapshot. Live Kubernetes ownership and Network Flow Monitor (NFM) windows are reported as gaps.
+
+### Prepare the readers
+
+1. Review the schema and reader grants against the private inventory and resource model decision (ADR-010). Run the standalone migration, verify exit 0 and reader synchronization, then start a fresh dev Web build. See [the release procedure](web-release.md).
+2. The migration creates `awsops_topology_reader` with login disabled on first installation. In a TLS-verified private administrative PostgreSQL session, set its dedicated password with `\password awsops_topology_reader`.
+3. Store the matching credential in Secrets Manager at `ops/<project>/agent/topology-reader` using the default Secrets Manager key. Include username `awsops_topology_reader`, database `awsops`, the cluster endpoint and port 5432. Keep the password out of shell arguments, task environment variables and logs.
+4. Enable the dedicated login with `ALTER ROLE awsops_topology_reader LOGIN`. Check isolation using the query below. Both columns must return false.
+
+   ```sql
+   SELECT has_table_privilege('awsops_sql_reader', 'sql_reader.service_topology_entities', 'SELECT') AS can_read_entities,
+          has_function_privilege('awsops_sql_reader', 'sql_reader.service_topology_read(uuid,text,text,text,integer,integer)', 'EXECUTE') AS can_call_reader;
+   ```
+
+### Publish and verify
+
+1. On an approved private host, provide `AURORA_ENDPOINT`, `AURORA_DATABASE`, `AWS_REGION`, the trusted `HOST_ACCOUNT_ID` and a scoped IAM session. Install locked Web dependencies and build the publisher.
+   ```bash
+   npm ci --prefix web
+   npm run build:service-topology --prefix web
+   ```
+2. Publish the current host projection.
+   ```bash
+   AURORA_USER=awsops_worker node scripts/v2/service-topology-rebuild.mjs --publish-host
+   ```
+3. Inspect the CLI exit code and receipt.
+
+   | Exit | Meaning | Operator action |
+   |---|---|---|
+   | 0 | Confirmed inputs and publication, or reuse of the same head | Record snapshot ID and clocks. |
+   | 2 | Partial publication | Inspect source gaps and the reported numbers of omitted entities and relations. |
+   | 1 | Publication failed | Check the bundle, database role and schema, then retry with a fresh read. |
+
+4. Verify schema, reader secret, Lambda, Web and gateway compatibility. Then follow [Dev pilot switch](#dev-pilot-switch) and compare the snapshot ID, a dependency and a source gap between the authenticated Web view and inventory-read Data API response.
+5. To disable the pilot, turn off the feature flag and stop manual publication. Disabled authenticated requests for the service class return 404 before a graph read.
+
+The publisher rechecks source versions across short transactions before updating the head. Its 8,192-row / 8 MiB inventory budget prioritizes core inputs, then elastic network interface (ENI) enrichment, API routes and listener rules. The derived projection allows up to 20,000 entities, 32,000 relations and 8 MiB. The CLI reports omissions as partial publication.
+
+### Dev pilot switch
+
+Set the nonsecret repository variable `CI_TOPOLOGY_ENTITIES_ENABLED_DEV=true` only after the dedicated reader secret exists. A missing secret stops the full dev plan during the Secrets Manager lookup. Review and apply the saved plan. Apply uses its pinned values. To disable, set the variable to `false` and review the resulting removal of pilot bindings and resources. Clearing it instead restores the tfvars value, which disables the pilot on the next applied full plan if tfvars uses the default `false`.

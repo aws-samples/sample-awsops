@@ -1,5 +1,5 @@
 // web/app/api/incidents/prevention/route.ts
-// ADR-032 Phase 4: read-only cross-incident prevention-insights API.
+// ADR-006[legacy 032] Phase 4: read-only cross-incident prevention-insights API.
 //
 // SAFETY (cross-incident prevention loop shipped OFF; recommend-only):
 //   - GET is READ-ONLY and degrade-safe: it never mutates AWS/k8s/SSM/SFN, never

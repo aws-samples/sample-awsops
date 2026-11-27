@@ -28,7 +28,7 @@ export interface BarDistributionProps {
 export default function BarDistribution({ title, subtitle, right, data, xKey, yKey, decimals, valuePrefix, className, preserveOrder = false }: BarDistributionProps) {
   // preserveOrder (gap L135): a value-axis histogram (e.g. memory sizes) must keep the
   // caller's numeric order — the default count-descending re-sort is for rankings.
-  const sorted = preserveOrder ? data : [...data].sort((a, b) => (Number(b[yKey]) || 0) - (Number(a[yKey]) || 0));
+  const sorted = preserveOrder ? data : data.toSorted((a, b) => (Number(b[yKey]) || 0) - (Number(a[yKey]) || 0));
   return (
     <HBarList
       title={title}

@@ -21,11 +21,12 @@ import MultiLineTrend from '@/components/charts/MultiLineTrend';
 import SegmentedControl from '@/components/ui/SegmentedControl';
 import AiOps from '@/components/overview/AiOps';
 import { useActiveScope, scopeParams, type ScopeSelection } from '@/lib/account-context';
-import { nearestSnapshot, netChange, covCompleteForScope, isDerivedTrendType, sameAccountSet, DERIVED_TREND_TYPES, type TrendCoverage } from '@/lib/trend-utils';
+import { nearestSnapshot, netChange, covCompleteForScope, countsTowardFleetTotal, sameAccountSet, trendLegendGroups, DERIVED_TREND_TYPES, type TrendCoverage } from '@/lib/trend-utils';
 import { estimateCostImpact, COST_IMPACT_WEIGHTS } from '@/lib/cost-impact';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import { localeOf } from '@/lib/i18n';
 import { eksClusterLabel } from '@/lib/eks-cluster-id';
+import { fleetNodeTotals, formatFleetNodeReady } from '@/lib/eks-resources';
 
 interface Overview {
   jobs: { queued: number; running: number; succeeded: number; failed: number };
@@ -54,7 +55,9 @@ interface FleetCluster {
   region?: string;
   reachable: boolean;
   error?: string;
-  counts: { nodes: number; nodesReady: number; pods: number; podsRunning: number; deployments: number; services: number };
+  /** nodesReady is null (unknown) and ec2Running is set when nodesSource is 'aws-api'. */
+  counts: { nodes: number; nodesReady: number | null; ec2Running?: number; pods: number; podsRunning: number; deployments: number; services: number };
+  nodesSource?: 'aws-api';
   podStatus: Record<string, number>;
   events: { reason?: string; message?: string; object?: string; count?: number; lastSeenTs?: number; [k: string]: unknown }[];
 }
@@ -265,14 +268,15 @@ function ScopedHome({ scope }: { scope: ScopeSelection }) {
   const eks = reachableClusters.reduce(
     (a, c) => {
       a.nodes += c.counts?.nodes ?? 0;
-      a.nodesReady += c.counts?.nodesReady ?? 0;
       a.pods += c.counts?.pods ?? 0;
       a.deployments += c.counts?.deployments ?? 0;
       for (const [k, v] of Object.entries(c.podStatus ?? {})) a.podStatus[k] = (a.podStatus[k] ?? 0) + Number(v);
       return a;
     },
-    { nodes: 0, nodesReady: 0, pods: 0, deployments: 0, podStatus: {} as Record<string, number> },
+    { nodes: 0, pods: 0, deployments: 0, podStatus: {} as Record<string, number> },
   );
+  // EC2/node-group clusters have no Ready condition — shown as "EC2 running N · Ready unknown".
+  const eksNodeReady = formatFleetNodeReady(fleetNodeTotals(reachableClusters.filter((c) => c.counts)));
   const podStatusDonut = Object.entries(eks.podStatus)
     .map(([name, value]) => ({ name, value }))
     .filter((d) => d.value > 0);
@@ -346,11 +350,9 @@ function ScopedHome({ scope }: { scope: ScopeSelection }) {
   // the chart entirely. The palette has 8 hues; indices past 8 wrap (colorFor is modulo), a
   // conscious trade — derived series are default-hidden, so duplicated hues only co-occur
   // when a user opts a security series in. Colors stay pinned to each series' index.
-  const realTrendTypes = (resTrend?.types ?? []).filter((t) => !isDerivedTrendType(t));
-  const derivedTrendTypes = (resTrend?.types ?? []).filter((t) => isDerivedTrendType(t));
-  const trendTypes = [...realTrendTypes.slice(0, 8), ...derivedTrendTypes];
+  // Attachment-only types (ENIs) are appended like the derived series, into Other.
+  const { trendTypes, coreTypes, otherTypes, derivedTrendTypes } = trendLegendGroups(resTrend?.types ?? []);
   const trendSeries = trendTypes.map((t) => ({ key: t, label: INV_LABEL(t) }));
-  const coreTypes = realTrendTypes.slice(0, 5); // never a derived series, even on a tiny fleet
   // Chart honesty (gap L124): a (day, type) whose account coverage is less than the RESOLVED
   // scope is DROPPED from that day's point — the summed line would otherwise dip on an
   // account's silent day, presenting a sync artifact as a fleet change (the same rule the
@@ -369,7 +371,7 @@ function ScopedHome({ scope }: { scope: ScopeSelection }) {
         if (k === 'date' || k === 'total' || typeof v !== 'number') continue;
         if (!covCompleteForScope(cov, p.date, k, resolved)) { gapped = true; continue; }
         q[k] = v;
-        if (!isDerivedTrendType(k)) total += v;
+        if (countsTowardFleetTotal(k)) total += v;
       }
       q.total = total;
       return q;
@@ -387,7 +389,6 @@ function ScopedHome({ scope }: { scope: ScopeSelection }) {
   const trendScopeNarrowed = Boolean(resTrend?.degraded) || Boolean(
     resTrend?.accounts && selectedValidAccts && resTrend.accounts.length < selectedValidAccts.length,
   );
-  const otherTypes = trendTypes.slice(5).filter((t) => !isDerivedTrendType(t));
   // L127: 7d net change (lib/trend-utils netChange — coverage-parity diff with honest-degrade
   // branches; see its doc). The trend data IS account-scoped now (gap L124 — the fetch above
   // passes the accounts scope), but snapshots still have no REGION dimension — so a narrowed
@@ -449,7 +450,7 @@ function ScopedHome({ scope }: { scope: ScopeSelection }) {
     if (impactTrend?.degraded) return [];
     if (resTrend?.accounts && impactTrend?.accounts
       && !sameAccountSet(resTrend.accounts, impactTrend.accounts)) return [];
-    const pts = [...(impactTrend?.trend ?? [])].sort((a, b) => a.date.localeCompare(b.date));
+    const pts = (impactTrend?.trend ?? []).toSorted((a, b) => a.date.localeCompare(b.date));
     if (pts.length < 2) return [];
     const last = pts[pts.length - 1];
     if (nearestSnapshot(pts, 0) !== last) return []; // latest point itself is stale
@@ -663,7 +664,7 @@ function ScopedHome({ scope }: { scope: ScopeSelection }) {
               <StatTile size="compact" label="ECS 클러스터" value={n('ecs_cluster')} href="/inventory/ecs_cluster" icon={typeIcon('ecs_cluster')} micro={micro('ecs_cluster')} />
               <StatTile size="compact" label="AgentCore" value={`${SECTION_GATEWAYS} GW`} href="/assistant" icon={<Cpu size={13} />} />
               <StatTile size="compact" label="ECR 리포지토리" value={n('ecr')} href="/inventory/ecr" icon={typeIcon('ecr')} micro={micro('ecr')} />
-              <StatTile size="compact" label="EKS 클러스터" value={ov?.clusterCount == null ? DASH : headlineScope?.truncated ? `≥${ov.clusterCount}` : ov.clusterCount} href="/eks" icon={<Container size={13} />} micro={fleetMicroOk ? `${eks.nodesReady}/${eks.nodes} ready · ${eks.pods} pods · ${eks.deployments} deploys` : undefined} />
+              <StatTile size="compact" label="EKS 클러스터" value={ov?.clusterCount == null ? DASH : headlineScope?.truncated ? `≥${ov.clusterCount}` : ov.clusterCount} href="/eks" icon={<Container size={13} />} micro={fleetMicroOk ? `${eksNodeReady} · ${eks.pods} pods · ${eks.deployments} deploys` : undefined} />
               <StatTile size="compact" label="CloudFront" value={n('cloudfront')} href="/inventory/cloudfront" icon={typeIcon('cloudfront')} micro={micro('cloudfront')} />
             </div>
             {headlineScope && (

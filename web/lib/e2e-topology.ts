@@ -1,3 +1,5 @@
+import { buildEntityIndex, currentPodContext } from './service-topology/identity';
+import { edgeCounts } from './service-topology/metrics';
 import type {
   E2eCorrelationReason, E2eEdge, E2eEvidence, E2eGraph, E2eInput, E2eLabelKey, E2eLayer, E2eNode, E2eSelection, E2eView,
 } from './e2e-topology-types';
@@ -321,7 +323,7 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
       source: nodeId('service', input.account, text(edge.source)),
       target: nodeId('service', input.account, text(edge.target)),
       relation: text(edge.rel), evidence: 'service', directed: true,
-      meta: { confidence: edge.confidence, snapshotCapturedAt: sourceTime(input.services?.captured_at) },
+      meta: { ...edgeCounts(edge.meta), confidence: edge.confidence, snapshotCapturedAt: sourceTime(input.services?.captured_at) },
     });
   }
   const { shown: targets, truncated } = targetIndex(nodes, edges, hostAccountId, targetMembers);
@@ -402,6 +404,7 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
     else summary.unmatchedEndpoints++;
   };
 
+  const podIndex = buildEntityIndex(input.podBindings ?? [], []);
   const flowOccurrences = new Map<string, number>();
   list(input.network).forEach(rawObservation => {
     const observation = record(rawObservation);
@@ -451,6 +454,21 @@ export function buildE2eGraph(input: E2eInput): E2eGraph {
           evidence: 'network', directed: false, meta: { side },
         });
         correlate(endpoint, side);
+        // Existing TG conflicts and owner vetoes take precedence. The live Pod read can
+        // explain an otherwise unmatched peer even when it is internal-only.
+        if (hostAccountId && summary.configurationComplete && endpoint.meta.correlationReason === 'no_match'
+          && text(data.podName) && text(data.podNamespace)) {
+          const pod = currentPodContext({ account:hostAccountId,region:text(data.region),vpc:text(data.vpcId),
+            ip:text(data.ip),window:{start:Date.parse(text(observation.startTime)),end:Date.parse(text(observation.endTime))} },
+            text(data.podNamespace)+'/'+text(data.podName),podIndex);
+          if (pod) {
+            const ref=nodeId('configuration',input.account,'pod-uid',pod.id);
+            addNode({ id:ref,kind:'pod',layer:'configuration',label:pod.binding.label,
+              meta:{ id:pod.binding.nativeId,cluster:pod.binding.authority,region:pod.binding.region,
+                vpcId:pod.binding.vpc,capturedAt:new Date(pod.binding.evidence.capturedAt!).toISOString() } });
+            addEdge({ source:endpoint.id,target:ref,relation:'current-pod-record',evidence:'context',directed:false });
+          }
+        }
       }
 
       // The input list's order is retained in meta.flow for inspection, never as hop edges.

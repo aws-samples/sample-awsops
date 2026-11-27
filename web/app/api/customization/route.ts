@@ -1,4 +1,4 @@
-// ADR-031 Phase 1 — admin-gated CRUD for the skill/agent catalog.
+// ADR-004[legacy 031] Phase 1 — admin-gated CRUD for the skill/agent catalog.
 import { verifyUser } from '@/lib/auth';
 import { isAdmin } from '@/lib/admin';
 import { validateSkill, validateAgent } from '@/lib/skill-validation';
@@ -122,7 +122,7 @@ export async function PUT(request: Request) {
       accountId,
       enabledAgentIds: toIds(body.enabledAgentIds),
       enabledSkillIds: toIds(body.enabledSkillIds),
-      enabledIntegrationIds: toIds(body.enabledIntegrationIds), // ADR-039 P2 — per-space integrations
+      enabledIntegrationIds: toIds(body.enabledIntegrationIds), // ADR-007[legacy 039] P2 — per-space integrations
       toolAllowlist: toStrs(body.toolAllowlist),
       actor,
     });

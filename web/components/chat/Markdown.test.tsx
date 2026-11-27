@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
-import { afterEach, describe, it, expect } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+vi.mock('@/components/charts/MultiLineTrend', () => ({
+  default: ({ title, variant, data }: any) => <div data-testid="metric-chart">{title} · {variant} · {data.length}</div>,
+}));
 import Markdown from './Markdown';
 
 afterEach(cleanup);
@@ -48,5 +51,23 @@ describe('Markdown (assistant rendering)', () => {
     expect(() => render(<Markdown>{''}</Markdown>)).not.toThrow();
     cleanup();
     expect(() => render(<Markdown>{'**unterminated and | half | table'}</Markdown>)).not.toThrow();
+  });
+
+  it('charts completed explicit time tables, separates units, and preserves the original table', () => {
+    const md = '| 시각(UTC) | 에러율(%) | p99(ms) | 에러율 그래프 |\n| --- | --- | --- | --- |\n| 08:30 | 0.223 | 5.68 | ■■■ |\n| 08:35* | 0.148 | 4.24 | ■■ |';
+    const { container } = render(<Markdown visualizeTables>{md}</Markdown>);
+    expect(screen.getAllByTestId('metric-chart')).toHaveLength(2);
+    expect(container.querySelector('table')?.textContent).toContain('08:35*');
+    expect(container.querySelector('table')?.textContent).toContain('0.223');
+    fireEvent.click(screen.getByRole('button', { name: '막대 그래프' }));
+    expect(screen.getAllByTestId('metric-chart')[0].textContent).toContain('bar');
+    fireEvent.click(screen.getByRole('button', { name: '표' }));
+    expect(screen.queryByTestId('metric-chart')).toBeNull();
+    expect(container.querySelector('table')).toBeTruthy();
+  });
+
+  it('keeps the default streaming renderer as a table without repeatedly creating charts', () => {
+    render(<Markdown>{'| Time | Requests |\n| --- | --- |\n| 08:30 | 2 |\n| 08:35 | 3 |'}</Markdown>);
+    expect(screen.queryByTestId('metric-chart')).toBeNull();
   });
 });

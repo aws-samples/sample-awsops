@@ -2,6 +2,7 @@
 import { Children, isValidElement, memo, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import TimeSeriesTable from './TimeSeriesTable';
 
 /** Recursively join a node tree's text content — used to sniff a blockquote's leading
  *  ⚠️/주의 marker without depending on react-markdown's exact AST shape. */
@@ -23,7 +24,7 @@ function flattenText(node: ReactNode): string {
  *   chat reads identically inside the drawer and the /assistant page.
  * - Tolerates partial markdown mid-stream (react-markdown never throws on incomplete input).
  */
-function MarkdownImpl({ children }: { children: string }) {
+function MarkdownImpl({ children, visualizeTables = false }: { children: string; visualizeTables?: boolean }) {
   return (
     <div className="text-[13px] leading-relaxed text-ink-700 [overflow-wrap:anywhere]">
       <ReactMarkdown
@@ -66,11 +67,7 @@ function MarkdownImpl({ children }: { children: string }) {
           pre: ({ children }) => (
             <pre className="my-2 overflow-x-auto rounded-md border border-ink-100 bg-paper-muted p-3 font-mono text-[12px] leading-relaxed text-ink-700 [&_code]:border-0 [&_code]:bg-transparent [&_code]:p-0 [&_code]:text-ink-700">{children}</pre>
           ),
-          table: ({ children }) => (
-            <div className="my-2 overflow-x-auto rounded-md border border-ink-100">
-              <table className="w-full border-collapse text-[12px]">{children}</table>
-            </div>
-          ),
+          table: ({ children, node }) => <TimeSeriesTable node={node} enabled={visualizeTables}>{children}</TimeSeriesTable>,
           thead: ({ children }) => <thead className="bg-paper-muted">{children}</thead>,
           th: ({ children }) => <th className="border-b border-ink-100 px-2.5 py-1.5 text-left font-semibold text-ink-800">{children}</th>,
           td: ({ children }) => <td className="border-b border-ink-100 px-2.5 py-1.5 align-top text-ink-600">{children}</td>,

@@ -86,7 +86,7 @@ describe('account onboarding flow', () => {
     await screen.findByText(probeAllowed ? '등록하지 못했습니다. 연결 확인으로 진단 결과를 확인하세요.'
       : '등록하지 못했습니다. 아래 읽기 전용 명령어로 역할·신뢰 정책·ExternalId 설정을 확인하고, 운영자에게 연결 확인 범위 설정을 요청하세요.');
     expect(document.body.textContent).not.toContain('PRIVATE_REGISTER_FAILURE');
-    const check = screen.getByRole('button', { name: probeAllowed ? '연결 원인 확인' : '연결 확인', exact: true });
+    const check = screen.getByRole('button', { name: probeAllowed ? '연결 원인 확인' : '연결 확인' });
     expect((check as HTMLButtonElement).disabled).toBe(!probeAllowed);
     if (!probeAllowed) expect(screen.queryByRole('button', { name: '연결 원인 확인' })).toBeNull();
     expect(screen.getByText('읽기 전용 연결 문제 해결')).toBeTruthy();

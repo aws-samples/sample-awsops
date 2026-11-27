@@ -13,10 +13,28 @@ vi.mock('next/dynamic', () => ({
       onClick={() => onNodeClick(null, node)}>{node.data.label}</button>)}
   </div>,
 }));
-vi.mock('@xyflow/react', () => ({ Background: () => null, Controls: () => null, Position: {} }));
+vi.mock('@xyflow/react', () => ({ Background: () => null, Controls: () => null, Position: {}, MarkerType: { ArrowClosed: 'arrowclosed' } }));
 import ServiceMapPage from './page';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); push.mockReset(); });
+
+it.each(['runtime', 'model'])('labels %s dependencies as claims and exposes their exact endpoint details', async kind => {
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({
+    nodes: [{ id: 'inference:1', kind, label: 'inference-target', meta: {
+      sourceId: 'clickhouse:1', claimedAccountId: '111122223333', claimedRegion: 'us-east-1',
+      provider: 'aws.bedrock', model: 'example.model', endpoint: 'example.internal',
+      arn: 'arn:aws:bedrock-agentcore:us-east-1:111122223333:runtime/example',
+      identityProvenance: 'telemetry_claim', infra_ref: 'untrusted-inventory-ref',
+    } }], edges: [], captured_at: null,
+  }) })));
+  render(<ServiceMapPage />);
+  const node = await screen.findByRole('button', { name: new RegExp(`${kind}: inference-target`) });
+  expect(node.textContent).toContain('Telemetry claim');
+  fireEvent.click(node);
+  expect(screen.getByText('example.internal')).toBeTruthy();
+  expect(screen.queryByRole('link', { name: '인프라 리소스 보기 →' })).toBeNull();
+});
 
 it('labels queue attribution as unverified telemetry and never navigates it into AWS inventory', async () => {
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
@@ -35,6 +53,9 @@ it('labels queue attribution as unverified telemetry and never navigates it into
   expect(queue.textContent).toContain('claimedRegion: us-east-1');
   fireEvent.click(queue);
   expect(push).not.toHaveBeenCalled();
+  expect(screen.queryByRole('link', { name: '인프라 리소스 보기 →' })).toBeNull();
+  expect(screen.queryByRole('link', { name: '클러스터 요청 흐름 →' })).toBeNull();
+  expect(screen.getByText('identityProvenance')).toBeTruthy();
 });
 
 it('shows absent queue claims without substituting legacy reporter metadata', async () => {
@@ -64,4 +85,77 @@ it('reserves enough layout height for adjacent queue cards and their claim text'
   const height = Number.parseFloat(first.style.height);
   expect(height).toBeGreaterThan(100);
   expect(Math.abs(Number(first.dataset.y) - Number(second.dataset.y))).toBeGreaterThanOrEqual(height);
+});
+
+it('starts with a readable service path and explicitly restores workload context and other services', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({
+    nodes: [
+      { id: 'a', kind: 'service', label: 'checkout', meta: { sourceId: 'tempo:1' } },
+      { id: 'b', kind: 'service', label: 'unrelated', meta: { sourceId: 'tempo:2' } },
+      { id: 'db', kind: 'db', label: 'orders-db' },
+      { id: 'w', kind: 'workload', label: 'shop/checkout' },
+    ],
+    edges: [{ source: 'a', target: 'db', rel: 'queries' }, { source: 'b', target: 'db', rel: 'queries' },
+      { source: 'a', target: 'w', rel: 'runs_on' }], captured_at: null,
+  }) })));
+  render(<ServiceMapPage />);
+  expect(await screen.findByRole('button', { name: /service: checkout/ })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: /service: unrelated/ })).toBeNull();
+  expect(screen.queryByRole('button', { name: /workload: shop\/checkout/ })).toBeNull();
+  fireEvent.click(screen.getByRole('checkbox', { name: '워크로드 표시' }));
+  expect(screen.getByRole('button', { name: /workload: shop\/checkout/ })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: '전체 그래프' }));
+  expect(screen.getByRole('button', { name: /service: unrelated/ })).toBeTruthy();
+  fireEvent.change(screen.getByRole('textbox', { name: '서비스 검색' }), { target: { value: 'no-match' } });
+  expect(screen.queryByRole('button', { name: /service: checkout/ })).toBeNull();
+  expect(screen.getByText('검색 결과가 없습니다.')).toBeTruthy();
+});
+
+it('keeps same-name queues distinguishable by broker and source on their cards', async () => {
+ vi.stubGlobal('fetch',vi.fn(async()=>({ok:true,json:async()=>({nodes:['one','two'].map(id=>({id,kind:'queue',label:'orders',meta:{environment:'prod',cluster:'shop',broker:`broker-${id}`,sourceId:`source-${id}`}})),edges:[],captured_at:null})})));
+ render(<ServiceMapPage />);
+ const cards=await screen.findAllByRole('button',{name:/queue: orders/});
+ expect(cards[0].textContent).toContain('broker-one');
+ expect(cards[0].textContent).toContain('source-one');
+ expect(cards[0].textContent).toContain('prod');
+ expect(cards[1].textContent).toContain('broker-two');
+ expect(cards[1].textContent).toContain('source-two');
+});
+it('bounds a whole service map and reports display omissions',async()=>{
+ vi.stubGlobal('fetch',vi.fn(async()=>({ok:true,json:async()=>({nodes:Array.from({length:400},(_,i)=>({id:String(i),kind:'service',label:`service-${i}`})),edges:[],captured_at:null})})));
+ render(<ServiceMapPage />);
+ await screen.findByRole('button',{name:/service: service-0/});
+ fireEvent.click(screen.getByRole('button',{name:'전체 그래프'}));
+ expect(screen.getAllByRole('button',{name:/service: service-/})).toHaveLength(350);
+ expect(screen.getByText(/표시 한도에 따라 생략/).textContent).toContain('50');
+});
+
+it.each([
+  { accounts: ['123456789012'], regions: '__all__', includeGlobal: true },
+  { accounts: ['self'], regions: ['us-east-1'], includeGlobal: true },
+  { accounts: '__all__', regions: '__all__', includeGlobal: true },
+])('withholds the host snapshot for an unsupported stored scope %o', async scope => {
+  const fetcher = vi.fn();
+  vi.stubGlobal('fetch', fetcher);
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+  localStorage.setItem('awsops:scope', JSON.stringify(scope));
+  try {
+    render(<ServiceMapPage />);
+    expect((await screen.findByRole('status')).textContent).toContain('현재 범위에서는');
+    expect(fetcher).not.toHaveBeenCalled();
+  } finally { localStorage.removeItem('awsops:scope'); }
+});
+
+it('can retry a rejected read after the request settles', async () => {
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+  const fetcher = vi.fn()
+    .mockResolvedValueOnce({ status: 400, ok: false })
+    .mockResolvedValue({ status: 200, ok: true, json: async () => ({
+      nodes: [{ id: 's1', kind: 'service', label: 'recovered' }], edges: [], captured_at: null,
+    }) });
+  vi.stubGlobal('fetch', fetcher);
+  render(<ServiceMapPage />);
+  await screen.findByRole('alert');
+  fireEvent.click(screen.getByRole('button', { name: '새로고침' }));
+  expect(await screen.findByRole('button', { name: /service: recovered/ })).toBeTruthy();
 });

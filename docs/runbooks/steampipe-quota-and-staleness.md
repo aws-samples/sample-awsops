@@ -1,5 +1,26 @@
 # Runbook — Steampipe 쿼터 및 인벤토리 신선도 / Steampipe Quota and Inventory Staleness
 
+## S3 location-read denials
+
+The S3 inventory and public-access collectors use paginated `ListBuckets`
+`BucketRegion` metadata when present. A denied `GetBucketLocation` therefore does
+not erase region evidence that the authorized bucket listing already supplied.
+Responses without valid list-region metadata still use the location read; a
+failed fallback remains incomplete. The collectors finish enumeration before
+returning rows, reject repeated tokens/duplicate identities, and fail closed after
+100 pages of at most 1,000 buckets.
+
+Legacy `EU` location constraints normalize to `eu-west-1`. Old rows keyed by
+`EU` or an unknown region can coexist with the corrected row while a collection
+is incomplete; only a complete sweep authorizes the existing prune phases.
+
+Denied security-property reads remain explicit unknown attributes. A completed
+listing is not proof that bucket security was inspected, and release readiness
+still rejects unknown attributes. Failed pagination cannot authorize pruning or
+successful publication. This fix adds no IAM grant and does not modify bucket
+policies. Ship the collector through the reviewed Terraform saved-plan procedure,
+then inspect its terminal ledger and graph source qualification.
+
 ## Optional host scope / 선택적 호스트 범위
 
 `INVENTORY_HOST_ONLY=true` requires `EXPECTED_HOST_ACCOUNT_ID` and exactly one enabled
@@ -132,7 +153,7 @@ observe a complete cycle under [safe tuning](#6-안전한-튜닝--safe-tuning).
 Apply only the exact reviewed plan outside active collector/runtime proof, then
 confirm service stability and the effective `steampipe_limiter_config` event.
 Preserve bucket 4, plugin/Lambda/collector concurrency 4, schedule, timeouts and IAM.
-Require all 43 baseline types and every current catalog type to complete with zero
+Require all 49 baseline types and every current catalog type to complete with zero
 unknown attributes, plus authentication/DB, model and both owned worker proofs.
 Do not remove fields, accept fallback data as complete, or disable gates to pass.
 
@@ -404,7 +425,7 @@ and unknown attributes still stop release, and every configured member still nee
 fresh known-resource evidence alongside the aggregate catalog proof.
 `collection_attempts` retains this bounded scope; null scope means no valid scope
 was reported yet. These RPC/log fields do not turn the singleton ledger into a
-per-account coverage report or assert that all 43 types cover each member.
+per-account coverage report or assert that all 49 types cover each member.
 Enabled accounts with no enabled region and `all_regions=false` are excluded by
 `_enabled_target_accounts`; the metric must not imply they were measured. In explicit
 target mode the renderer rejects such registered members, and the exact member-proof
@@ -503,6 +524,8 @@ concurrency change needs a whole-plan check showing no DNS changes.
 **Raising a limit requires observed production headroom.** Increase only after evidence shows the current setting has sustained headroom without AWS throttling, increased sync age, Lambda throttles, or impact to production deployment/scaling operations. Change one control at a time, observe at least a full 15-minute cycle, and retain the prior values for rollback.
 
 The values are safeguards, not assertions of universal AWS quotas; service, operation, account, and Region quotas differ.
+
+**ENI inventory sizing.** The `eni` type has no pushdown predicate. Every ENI is written in one Aurora round trip, and stale ENIs are deleted one per row, all inside the fixed `AURORA_RESERVE_S` (120 s). Fargate task churn enlarges the stale set on every run. At the 2026-11-11 measurement (about 470–520 ENIs per account in ap-northeast-2, 41 in us-east-1) this is far below the reserve. Watch the `eni` sync duration in the sync Lambda logs as accounts or regions grow. If one account approaches several thousand ENIs per region, batch the upserts and deletes before adding more targets. An `eni` overrun fails that type, and the runtime release gate requires every catalog type, so it blocks web releases until the type succeeds.
 
 ## 7. 롤백 / Rollback
 

@@ -20,21 +20,44 @@ Pillar → section map (6 Well-Architected pillars):
 # Shared rules appended to every section prompt: evidence discipline, read-only, finding shape.
 # The OUTPUT language is appended separately per render via LANG_RULES (report lang, gap L50).
 _RULES = (
-    "마크다운 ### 소제목 + | 표 | + 불릿으로 구성하라. "
+    "마크다운 ### 소제목 + | 표 | + 불릿으로 구성하라. 표 중심으로 간결하게 쓰고 서론·결론 요약·같은 내용의 반복을 넣지 마라 — "
+    "출력 길이에 한도가 있으니 마지막 원인 분석 표까지 완성할 수 있게 분량을 조절하라. "
     "제공된 데이터에만 근거하라 — 신호가 없으면 '데이터 불가'로 명시하고 추측/날조 금지. "
     "각 발견에 심각도 [Critical]/[Warning]/[Info], 우선순위 P1/P2/P3, 공수 Low/Med/High, 근거(소스)를 붙여라. "
-    "AWS 리소스 변경·자동 실행을 제안하지 마라(읽기 전용 진단 — 권고만)."
+    "[Critical]/[Warning] 발견은 섹션 마지막의 '### 원인 분석 및 조치' 표(| 발견 | 대상 | 근거 | 원인 | 확인 방법 | 해결 절차 | 신뢰도 |)에 "
+    "발견당 한 행으로 간결하게 정리하라 — 대상(리소스 유형·이름/ID 또는 서비스), 근거(소스.필드=값), "
+    "원인(확인됨/추정 구분 — 근거가 부족하면 '원인 미확정: 필요한 데이터 X'), "
+    "확인 방법(읽기 전용 AWS CLI describe/get/list 명령 또는 콘솔 경로), "
+    "해결 절차(무엇을 어떻게 바꿀지 1~3단계로 서술한 권고 — 운영자가 IaC/변경 관리 절차로 검토·수행), 신뢰도 High/Med/Low. "
+    "근거 필드가 없는 발견은 쓰지 마라. "
+    "수집 상태 표를 따로 만들지 말고 해당 항목에 '데이터 불가(사유)'로만 표시하라(리포트 끝에 커버리지 목록이 있다). "
+    "진단은 읽기 전용이다 — 어떤 변경도 실행·자동화하지 말고, 변경을 수행하는 CLI 명령"
+    "(create/modify/put/update/delete/copy/start/stop/attach/revoke/enable/disable/register/deploy 등)은 어디에도(코드·백틱·괄호·본문 문장 포함) 쓰지 마라. "
+    "해결 절차에는 'aws' 명령 대신 콘솔 경로나 설정 이름(예: 'EC2 콘솔 → 설정 → EBS 암호화 → 기본 암호화 관리')과 "
+    "무엇을 어떻게 바꿀지 문장만 쓴다(권고만). `aws ... describe/get/list` 같은 읽기 명령은 '확인 방법' 칸에만 쓴다."
 )
 # Report output language (gap L50) — appended to every section prompt at render time. The prompt
 # BODIES stay Korean; this instruction governs the output language only. The [Critical]/[Warning]/
 # [Info] and P1/P2/P3 markers must stay verbatim (the UI/severity heuristics key on them).
 # NOTE: a manual i18n lockstep site — alongside agent/agent.py's language map and
 # bedrock-direct.ts (see web/lib/CLAUDE.md); adding a language starts at web SUPPORTED_LANGS.
+# The root-cause table heading per report lang. report.py checks that a section with a
+# [Critical]/[Warning] finding ends with one of these headings followed by a table, so the heading
+# is named explicitly in each language rule instead of being left to translation.
+RCA_HEADINGS = {
+    "ko": "원인 분석 및 조치",
+    "en": "Root Cause and Remediation",
+    "zh": "原因分析与处置",
+    "ja": "原因分析と対処",
+}
 LANG_RULES = {
     "ko": "모든 출력은 한국어로 작성하라.",
-    "en": "Write ALL output in English (keep the [Critical]/[Warning]/[Info] and P1/P2/P3 markers verbatim).",
-    "zh": "全部输出使用简体中文（[Critical]/[Warning]/[Info] 与 P1/P2/P3 标记保持原样）。",
-    "ja": "出力全体を日本語で書け（[Critical]/[Warning]/[Info] と P1/P2/P3 の表記はそのまま維持すること）。",
+    "en": "Write ALL output in English (keep the [Critical]/[Warning]/[Info] and P1/P2/P3 markers verbatim). "
+          f"Title the '### 원인 분석 및 조치' table '### {RCA_HEADINGS['en']}'.",
+    "zh": "全部输出使用简体中文（[Critical]/[Warning]/[Info] 与 P1/P2/P3 标记保持原样）。"
+          f"'### 원인 분석 및 조치' 表的标题写作 '### {RCA_HEADINGS['zh']}'。",
+    "ja": "出力全体を日本語で書け（[Critical]/[Warning]/[Info] と P1/P2/P3 の表記はそのまま維持すること）。"
+          f"'### 원인 분석 및 조치' の表の見出しは '### {RCA_HEADINGS['ja']}' とすること。",
 }
 
 # Localized titles for the sections whose catalog titles are Korean literals (the 7 deep-only
@@ -176,7 +199,10 @@ _DEEP_ONLY = [
      "prompt": (
          "당신은 IAM 최소권한·자격 증명 위생에 정통한 수석 보안 엔지니어다. 인벤토리(IAM 사용자/역할/정책)·Security Hub posture로 진단하라.\n"
          "### IAM 평가\n표(| 발견 | 수 | 심각도 | 우선순위 |): 루트 키·MFA 미설정·90일+ 액세스키·과다권한(Admin/PowerUser 역할·인라인 정책·와일드카드 Action)·미사용 자격(90일+). "
-         "posture 미구독이면 인벤토리 신호만으로 한정 보고하고 명시하라. " + _RULES)},
+         "posture 미구독이면 인벤토리 신호만으로 한정 보고하고 명시하라. "
+         "인벤토리는 수집 단계에서 정책 본문·인라인 정책·AssumeRole 정책 등 비밀 포함 필드를 제거한다(`redacted_keys`). "
+         "그래서 인라인 정책/와일드카드 Action/신뢰 정책 분석은 '데이터 불가(정책 본문 비수집)'로 쓰고 "
+         "정책이 없다·안전하다고 결론내리지 마라. " + _RULES)},
 
     {"key": "data_protection", "title": "데이터 보호 & 암호화",
      "sources": ["inventory", "posture"],

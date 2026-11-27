@@ -53,7 +53,8 @@ def handler(event, context):
     # FAIL-CLOSED: redeploy ONLY when we positively confirm this is the Aurora master secret (the rule
     # matches RotationSucceeded broadly across accounts/secrets). Skip — never restart prod web — if
     # the target secret is unconfigured, the event id is missing, or it doesn't match EXACTLY (by
-    # canonical key; no substring matching). Each skip logs WARN so a wrong event shape is visible.
+    # canonical key; no substring matching). Log skip reasons without unrelated secret identifiers;
+    # operators can correlate the source event in CloudTrail for detailed diagnosis.
     if not want:
         print("[secret-rotation-redeploy] WARN: AURORA_SECRET_ARN unset — SKIPPING (fail-closed)", file=sys.stderr)
         return {"skipped": "no-target-configured"}
@@ -62,8 +63,8 @@ def handler(event, context):
               f"{list((event.get('detail') or {}).keys())} — SKIPPING (fail-closed)", file=sys.stderr)
         return {"skipped": "unidentified-secret"}
     if not _matches_target(got, want):
-        print(f"[secret-rotation-redeploy] ignoring rotation of {got} (not the Aurora master secret)")
-        return {"skipped": got}
+        print("[secret-rotation-redeploy] ignoring rotation of an unrelated secret")
+        return {"skipped": "unrelated-secret"}
     ecs = boto3.client("ecs")
     redeployed = []
     failed = {}

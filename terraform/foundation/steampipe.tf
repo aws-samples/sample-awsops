@@ -294,7 +294,7 @@ resource "aws_lambda_layer_version" "inv_pg8000" {
   layer_name               = "${var.project}-inv-pg8000"
   filename                 = data.archive_file.inv_layer[0].output_path
   source_code_hash         = data.archive_file.inv_layer[0].output_base64sha256
-  compatible_runtimes      = ["python3.12"]
+  compatible_runtimes      = ["python3.14"]
   compatible_architectures = ["arm64"]
 }
 data "archive_file" "inv_sync_src" {
@@ -353,7 +353,7 @@ resource "aws_lambda_function" "inv_sync" {
   count            = local.sp
   function_name    = "${var.project}-inv-sync"
   role             = aws_iam_role.inv_sync[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "sync_lambda.lambda_handler"
   filename         = data.archive_file.inv_sync_src[0].output_path

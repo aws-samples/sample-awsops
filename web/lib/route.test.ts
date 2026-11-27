@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { pickGateway, classifyRoute, matchedSections, ACTIVE_FALLBACK } from './route';
+import { stripResources } from './route-resources';
 
 describe('pickGateway', () => {
   it('honors an explicit pin over keywords', () => {
@@ -16,6 +17,83 @@ describe('pickGateway', () => {
   it('routes network keywords', () => {
     expect(pickGateway('두 인스턴스 통신이 안 돼요')).toBe('network');
     expect(pickGateway('check the security group ports')).toBe('network');
+  });
+  it('routes the Korean "보안 그룹" (security group) to network, not the IAM-only security gateway', () => {
+    const eni = 'ENI <eni-058d44a138cb9f099>의 보안 그룹, 네트워크 ACL, 라우팅 설정을 조회하고 추가 확인이 필요한 항목을 정리해 주세요.';
+    expect(matchedSections(eni)).toEqual(['network']);
+    expect(pickGateway(eni)).toBe('network');
+    expect(pickGateway('보안 그룹 규칙 보여줘')).toBe('network');
+    expect(pickGateway('보안그룹 인바운드 확인')).toBe('network');
+    expect(pickGateway('eni-0abc 상태 알려줘')).toBe('network');
+    expect(pickGateway('라우팅 테이블 확인해줘')).toBe('network');
+    // a genuine security ask keeps its route
+    expect(pickGateway('보안 취약점 점검해줘')).toBe('security');
+  });
+  it('routes security-group / NACL / route-table phrasings with policy words to network', async () => {
+    const prompts = [
+      '보안 그룹 정책 검토해줘',
+      'check the security group policy',
+      '보안그룹 권한 설정 확인',
+      '네트워크 ACL 정책 확인',
+      'route table policy review',
+      '보안  그룹 규칙',
+      'ENI 권한 확인',
+      'network ACL policy review',
+      '라우트 테이블 정책',
+      'sg 정책 확인',
+      'who changed the security group',
+      '보안 그룹 누가 변경했어',
+    ];
+    for (const p of prompts) {
+      expect(pickGateway(p)).toBe('network');
+      expect((await classifyRoute(p)).primary).toBe('network');
+    }
+    expect(pickGateway('IAM 정책 검토해줘')).toBe('security');
+  });
+  it('an IAM principal next to a network object keeps the security route', async () => {
+    for (const p of ['어떤 IAM 역할이 보안 그룹을 수정할 수 있나요?', 'which IAM role may modify the security group?',
+      '어떤 principal이 보안 그룹을 수정할 수 있나요?']) {
+      expect(pickGateway(p)).toBe('security');
+      expect((await classifyRoute(p)).primary).toBe('security');
+      const classify = vi.fn(async () => [{ key: 'security', score: 0.9 }]);
+      const r = await classifyRoute(p, undefined, { llmEnabled: true, classify });
+      expect(r.primary).toBe('security');
+    }
+    expect(pickGateway('access control on the security group')).toBe('network');
+    expect(pickGateway('Which IAM role may modify sg-0123456789abcdef0?')).toBe('security');
+    // user/사용자 is not an IAM principal: an ordinary network question that mentions users stays network
+    expect(pickGateway('Show the route table for the user subnet')).toBe('network');
+  });
+  it('keeps security as a candidate for a policy that is not the network object’s own', async () => {
+    for (const p of ['Check the security group and the account password policy', 'Check the security group and S3 policy',
+      '보안 그룹과 노출 정책 점검', '보안 그룹과 버킷 정책 검토해줘']) {
+      const classify = vi.fn(async () => [{ key: 'network', score: 0.6 }, { key: 'security', score: 0.5 }]);
+      const r = await classifyRoute(p, undefined, { llmEnabled: true, classify });
+      expect(classify).toHaveBeenCalledTimes(1);
+      expect(r.method).toBe('llm');
+    }
+    // the object's own policy, with or without a particle, still skips the classifier
+    for (const p of ['보안 그룹의 정책 확인', 'ENI에 대한 권한 확인']) {
+      const classify = vi.fn(async () => [{ key: 'security', score: 0.9 }]);
+      expect(await classifyRoute(p, undefined, { llmEnabled: true, classify })).toMatchObject({ primary: 'network', method: 'regex' });
+      expect(classify).not.toHaveBeenCalled();
+    }
+  });
+  it('keeps network-object phrasings with policy words off the classifier on the hybrid path', async () => {
+    for (const p of ['보안 그룹 정책 검토해줘', 'ENI 권한 확인', 'network ACL policy review']) {
+      const classify = vi.fn(async () => [{ key: 'security', score: 0.9 }]);
+      const r = await classifyRoute(p, undefined, { llmEnabled: true, classify });
+      expect(r.primary).toBe('network');
+      expect(r.method).toBe('regex');
+      expect(classify).not.toHaveBeenCalled();
+    }
+  });
+  it('keeps security as a candidate when the question has a security subject besides the network object', async () => {
+    const classify = vi.fn(async () => [{ key: 'network', score: 0.6 }, { key: 'security', score: 0.5 }]);
+    const r = await classifyRoute('보안 그룹과 퍼블릭 노출된 S3 점검', undefined, { llmEnabled: true, classify });
+    expect(classify).toHaveBeenCalledTimes(1);
+    expect(r.method).toBe('llm');
+    expect(r.selected.map((s) => s.key)).toEqual(['network', 'security']);
   });
   it('falls back to ops for unknown prompts', () => {
     expect(pickGateway('안녕하세요')).toBe('ops');
@@ -150,7 +228,7 @@ describe('classifyRoute', () => {
   });
 });
 
-describe('classifyRoute — ADR-044 multi-domain detection', () => {
+describe('classifyRoute — ADR-003[legacy 044] multi-domain detection', () => {
   it('≥2 active routes above threshold ⇒ multiDomain + selected (desc, ≤3)', async () => {
     const classify = vi.fn().mockResolvedValue([
       { key: 'network', score: 0.9 }, { key: 'data', score: 0.6 }, { key: 'container', score: 0.5 },
@@ -349,5 +427,156 @@ describe('auto-collect collector rules — dedicated strong keywords only (v1 au
     expect(matchedSections('배포 후에 장애가 났어')).toEqual([]); // no 원인/분석 → classifier decides
     expect(matchedSections('어제부터 뭔가 이상해요')).toEqual([]);
     expect(matchedSections('DynamoDB 스로틀링 원인 분석')).not.toContain('incident'); // no 장애/사고 noun → stays data
+  });
+});
+
+describe('pickGateway follow-up continuity', () => {
+  it('keeps the previous section for a keyword-less follow-up', () => {
+    expect(pickGateway('그럼 그건 왜 그래?', undefined, 'cost')).toBe('cost');
+  });
+  it('a keyword still re-routes away from the previous section', () => {
+    expect(pickGateway('보안 그룹 연결 확인해줘', undefined, 'cost')).not.toBe('cost');
+  });
+  it('a pin beats the previous section', () => {
+    expect(pickGateway('더 자세히', 'security', 'cost')).toBe('security');
+  });
+  it('falls back to ops without a (valid) previous section', () => {
+    expect(pickGateway('더 자세히')).toBe('ops');
+    expect(pickGateway('더 자세히', undefined, 'nope')).toBe('ops');
+  });
+});
+
+describe('classifyRoute follow-up continuity (hybrid)', () => {
+  it('uses the previous section when neither a keyword nor the classifier picks a route', async () => {
+    const r = await classifyRoute('더 자세히', undefined, { llmEnabled: true, classify: async () => [], previous: 'cost' });
+    expect(r.primary).toBe('cost');
+    expect(r.method).toBe('previous');
+  });
+  it('a classifier answer still wins over the previous section', async () => {
+    const r = await classifyRoute('더 자세히', undefined, {
+      llmEnabled: true, classify: async () => [{ key: 'security', score: 0.9 }], previous: 'cost' });
+    expect(r.primary).toBe('security');
+  });
+});
+
+describe('resource-first routing', () => {
+  it('a named resource beats keywords; pin still wins', () => {
+    expect(pickGateway('i-0a1b2c3d4e5f60718 보안 점검')).toBe('ops');
+    expect(pickGateway('eni-0a1b2c3d', 'cost')).toBe('cost');
+  });
+  it('classifyRoute short-circuits on a named resource without calling the classifier', async () => {
+    const classify = vi.fn();
+    const r = await classifyRoute('eni-0a1b2c3d 상태', undefined, { llmEnabled: true, classify });
+    expect(r).toMatchObject({ primary: 'network', method: 'resource', multiDomain: false });
+    expect(classify).not.toHaveBeenCalled();
+  });
+  it('an ops-owned resource lets the hybrid classifier arbitrate', async () => {
+    const prompt = 'i-0123456789abcdef0 가 자꾸 죽어';
+    const classify = vi.fn(async () => [{ key: 'monitoring', score: 0.8 }]);
+    const r = await classifyRoute(prompt, undefined, { llmEnabled: true, classify });
+    expect(r).toMatchObject({ primary: 'monitoring', method: 'llm' });
+    expect(classify).toHaveBeenCalledTimes(1);
+    const failing = vi.fn(async () => { throw new Error('x'); });
+    expect(await classifyRoute(prompt, undefined, { llmEnabled: true, classify: failing }))
+      .toMatchObject({ primary: 'ops', method: 'resource' });
+    expect(await classifyRoute(prompt)).toMatchObject({ primary: 'ops', method: 'resource' });
+  });
+
+  // A named resource must not override an explicit subject from another area: IDs become object words
+  // and ARNs their service name, and the resource's section wins alone only when no IAM principal is
+  // named (unless it is an IAM ARN), at most one area's keywords match (a list/count phrasing is
+  // ignored), and that area is absent, the resource's own, or `보안` directly after an instance ID.
+  const otherAreaIntent: [string, string][] = [
+    ['i-0123456789abcdef0 의 CPU 사용률 지표 보여줘', 'monitoring'],
+    ['i-0123456789abcdef0 CloudTrail 누가 변경했는지', 'monitoring'],
+    ['sg-0123456789abcdef0 관련 비용', 'cost'],
+    ['arn:aws:eks:ap-northeast-2:123456789012:cluster/c 비용 분석', 'cost'],
+    ['i-0123456789abcdef0 의 보안 그룹 규칙 확인', 'network'],
+    ['어떤 IAM role이 arn:aws:rds:ap-northeast-2:123456789012:db:mydb에 접근 가능한가요?', 'security'],
+    ['which role can access arn:aws:rds:ap-northeast-2:123456789012:db:mydb', 'security'],
+    ['i-0123456789abcdef0 에 붙은 IAM 권한 확인', 'security'],
+    ['Which IAM role may modify sg-0123456789abcdef0?', 'security'],
+    ['why is i-0123456789abcdef0 access denied?', 'security'],
+    // like "보안 그룹 접근이 denied" (network first; the hybrid classifier still sees security)
+    ['sg-0123456789abcdef0 접근이 denied 돼요', 'network'],
+    ['which principal can modify sg-0123456789abcdef0?', 'security'],
+    ['Can arn:aws:sts::123456789012:assumed-role/Admin/session modify sg-0123456789abcdef0?', 'security'],
+  ];
+  it.each(otherAreaIntent)('pickGateway keeps another area’s keyword: %s → %s', (prompt, want) => {
+    expect(pickGateway(prompt)).toBe(want);
+  });
+  it.each(otherAreaIntent)('classifyRoute keeps another area’s keyword: %s → %s', async (prompt, want) => {
+    const r = await classifyRoute(prompt);
+    expect(r.primary).toBe(want);
+    expect(r.method).not.toBe('resource');
+  });
+  it('a bare policy word next to a network ID keeps the network route', async () => {
+    for (const p of ['eni-0a1b2c3d 에 대한 권한 확인', 'sg-0123456789abcdef0 의 정책 확인']) {
+      expect(pickGateway(p)).toBe('network');
+      expect(await classifyRoute(p)).toMatchObject({ primary: 'network' });
+    }
+  });
+  it('every network ID prefix follows the network-object rule', async () => {
+    for (const p of ['vpc-0a1b2c3d 보안 점검', 'subnet-0a1b2c3d 권한 확인', 'vpce-0a1b2c3d4e5f60718 정책 확인']) {
+      expect(pickGateway(p)).toBe('network');
+    }
+    const classify = vi.fn(async () => [{ key: 'security', score: 0.9 }]);
+    const r = await classifyRoute('subnet-0a1b2c3d 권한 확인', undefined, { llmEnabled: true, classify });
+    expect(r.primary).toBe('network');
+    expect(classify).not.toHaveBeenCalled();
+  });
+  it('a resource ID follows the network-object rule for policy words', async () => {
+    const classify = vi.fn(async () => [{ key: 'network', score: 0.6 }, { key: 'security', score: 0.5 }]);
+    const r = await classifyRoute('sg-0123456789abcdef0 과 버킷 정책 검토해줘', undefined, { llmEnabled: true, classify });
+    expect(classify).toHaveBeenCalledTimes(1);
+    expect(r.method).toBe('llm');
+    expect(pickGateway('i-0123456789abcdef0 이 퍼블릭에 노출됐나?')).toBe('security');
+    expect(pickGateway('sg-0123456789abcdef0 의 정책 확인')).toBe('network');
+    expect(await classifyRoute('sg-0123456789abcdef0 의 정책 확인')).toMatchObject({ primary: 'network' });
+  });
+  it('a list/count phrasing about a named resource stays with the resource', async () => {
+    expect(pickGateway('list all rules for sg-0123456789abcdef0')).toBe('network');
+    expect(await classifyRoute('list all rules for sg-0123456789abcdef0'))
+      .toMatchObject({ primary: 'network', method: 'resource' });
+    expect(pickGateway('eni-0a1b2c3d 몇 개 붙어 있어?')).toBe('network');
+  });
+  it('an unrecognised ARN keeps its service keyword', () => {
+    expect(pickGateway('arn:aws:dynamodb:ap-northeast-2:123456789012:table/x 점검')).toBe('data');
+    expect(pickGateway('arn:aws:eks:ap-northeast-2:123456789012:cluster/c,비용분석해줘')).toBe('cost');
+    expect(pickGateway('arn:aws:eks:ap-northeast-2:123456789012:cluster/c,cost analysis')).toBe('cost');
+    const stripped = stripResources('arn:aws:dynamodb:ap-northeast-2:123456789012:table/x 점검');
+    expect(stripped).toContain('dynamodb');
+    expect(stripped).not.toContain('123456789012');
+  });
+  it('a resource question naming several areas runs the classifier path unchanged', async () => {
+    const classify = vi.fn(async () => [{ key: 'cost', score: 0.9 }]);
+    const r = await classifyRoute('arn:aws:eks:ap-northeast-2:123456789012:cluster/c 비용 분석과 파드 상태', undefined,
+      { llmEnabled: true, classify });
+    expect(classify).toHaveBeenCalledTimes(1);
+    expect(r).toMatchObject({ primary: 'cost', method: 'llm' });
+  });
+  it('the security collision and own-section keywords still route by resource', async () => {
+    const sec = await classifyRoute('i-0a1b2c3d4e5f60718 보안 점검');
+    expect(sec).toMatchObject({ primary: 'ops', method: 'resource' });
+    const own = await classifyRoute('ENI <eni-058d44a138cb9f099>의 보안 그룹, 네트워크 ACL, 라우팅 설정을 조회해 주세요.');
+    expect(own).toMatchObject({ primary: 'network', method: 'resource' });
+  });
+  it('a resource question spanning several areas keeps the classifier and multi-domain fan-out', async () => {
+    const classify = vi.fn(async () => [{ key: 'network', score: 0.6 }, { key: 'data', score: 0.5 }]);
+    const r = await classifyRoute('eni-0a1b2c3d 와 RDS 연결 안 돼', undefined, { llmEnabled: true, classify });
+    expect(classify).toHaveBeenCalledTimes(1);
+    expect(r.method).toBe('llm');
+    expect(r.multiDomain).toBe(true);
+    expect(r.selected.map((s) => s.key)).toEqual(['network', 'data']);
+  });
+  it('resource IDs become object words and ARNs their service name', () => {
+    const stripped = stripResources('sg-0123456789abcdef0 와 arn:aws:rds:ap-northeast-2:123456789012:db:mydb 확인');
+    expect(stripped).toContain(' sg ');
+    expect(stripped).toContain(' rds ');
+    expect(stripped).not.toContain('sg-0123');
+    expect(stripped).not.toContain('arn:');
+    expect(stripped).not.toContain('mydb');
+    expect(stripped).not.toContain('123456789012');
+    expect(matchedSections('sg-0123456789abcdef0 비용')).toEqual(['cost', 'network']);
   });
 });

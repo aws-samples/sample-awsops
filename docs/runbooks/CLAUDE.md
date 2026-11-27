@@ -12,27 +12,25 @@ erasing valid Read evidence. Source helper/tests and the role consumer catalog a
 
 | Runbook | Topic |
 |---|---|
+| [custom-mcp-governance.md](custom-mcp-governance.md) | Administrator MCP read controls, per-row current Secret binding, account selection, attestation and pending policy acceptance |
 | [review-codec-sandbox.md](review-codec-sandbox.md) | Standalone Docker codec confinement, bounded byte transport and owned cleanup |
 | [review-image-capability.md](review-image-capability.md) | Manual authenticated runner Read proof for a synthetic image; no review-gate substitution |
-| [start-services.md](start-services.md) | **⚠️ v1 (legacy)** — start all services (Steampipe + Next.js on EC2); v2 runs ECS always-on |
-| [deploy-new-version.md](deploy-new-version.md) | **⚠️ v1 (legacy)** — deploy a new version (CDK); v2 uses `make deploy` |
-| [add-new-page.md](add-new-page.md) | Adding a new dashboard page |
-| [multi-account-setup.md](multi-account-setup.md) | **⚠️ v1 (legacy)** — onboard a new AWS account (Steampipe Aggregator); v2 uses `onboard-target-account.md` |
 | [onboard-target-account.md](onboard-target-account.md) | v2 target-account onboarding (`AWSopsReadOnlyRole` + ExternalId) |
 | [istio-agent-eks-access.md](istio-agent-eks-access.md) | Granting `istio-read` MCP access to an EKS cluster (agent Lambda role Access Entry) |
 | [network-path-eks-access.md](network-path-eks-access.md) | Granting Network Path Check live-identity verification access to an EKS cluster's Nodes/Pods (worker/member-role Access Entry with minimal Nodes/Pods read RBAC) |
 | [k8sgpt-operator-install.md](k8sgpt-operator-install.md) | Out-of-band K8sGPT operator install (manual operator work, ADR-005 precedent) |
-| [alert-pipeline-troubleshoot.md](alert-pipeline-troubleshoot.md) | Alert pipeline failure response (ADR-008/013) |
-| [cache-warmer-issues.md](cache-warmer-issues.md) | Cache warmer staleness / error response |
+| [datasource-credential-isolation.md](datasource-credential-isolation.md) | Native datasource credential identity and mandatory default backfill before rollout (ADR-007) |
 | [tempo-query-generation.md](tempo-query-generation.md) | Tempo query generation — connector/web deployment, admin API schema refresh, cached summaries, and recent-window limits |
 | [graph-read-contract.md](graph-read-contract.md) | Bounded graph reads/rebuilds, shared admission, infra dependency, publication outcomes, registry diagnostics and PostgreSQL fixtures |
 | [source-sync-observability.md](source-sync-observability.md) | Public source rollout — flow/infra/trace collection clocks, retention/budgets, reader projections, DX scope and deployment prerequisites |
-| [cognito-auth-issues.md](cognito-auth-issues.md) | Login failures, Lambda@Edge verification errors |
+| [privatelink-observability.md](privatelink-observability.md) | Cross-account PrivateLink to ClickHouse/Prometheus/Loki/Tempo/Mimir datasources (endpoints admit only their own kind's connector client group; zone/record changes need `allow_dns_changes` and a two-step apply) — provider endpoint service, consumer endpoints, optional private DNS names, acceptance, verification, rollback (ADR-007) |
+| [connector-target-sync.md](connector-target-sync.md) | Chat connector target registration (`connector_target_sync_enabled`): ADR-005 owner-override exception scope, one-stack-per-account caveat, enable/verify, reason codes, disable leaves written targets (ADR-005) |
+| [model-provider.md](model-provider.md) | Deploy-time model family (`model_provider`): mixed, Bedrock Claude only, Bedrock GPT only or the Anthropic API with a Secrets Manager key; per-role mapping, IAM scope, enable and rollback |
 | [user-offboarding.md](user-offboarding.md) | Offboarding a departing employee's Cognito account — closing the account-takeover path (ADR-002/009) |
 | [v1-to-v2-aurora-backfill.md](v1-to-v2-aurora-backfill.md) | v1→v2 Aurora history backfill |
 | [v1-decommission.md](v1-decommission.md) | v1 legacy decommission — 5-phase procedure (ADR-016) |
 | [branch-strategy.md](branch-strategy.md) | Single-repo branch/PR chain (user → dev → main + guard), external-PR handling, domain map, production-domain decision, per-user preview stacks |
-| [pr-review-head-images.md](pr-review-head-images.md) | Two-reviewer input admission, HEAD image staging, BASE distinction and incomplete-review diagnostics |
+| [pr-review-head-images.md](pr-review-head-images.md) | Claude Code Action on Bedrock, exact-commit review, HEAD image staging and coverage diagnostics |
 | [dev-repo-setup.md](dev-repo-setup.md) | CI/OIDC, private exact-plan inspection and encrypted failure recovery; upload-confirmed cleanup; ECR preflight, state-preserving DNS, authenticated assets, Host/SNI smoke, private DB migration, mandatory full dev runtime verification and opt-in diagnostics (ADR-002/005/016) |
 | [release-safety-primitives.md](release-safety-primitives.md) | Active web controller/bounded reads, forced web-migration SQL admission, immediate contention and operator recovery (ADR-001/005) |
 | [web-release.md](web-release.md) | Digest-bound web release, private migration ordering, mandatory full dev runtime checks and explicit image rollback (ADR-001/005) |
@@ -48,11 +46,10 @@ erasing valid Read evidence. Source helper/tests and the role consumer catalog a
 
 ## Deployment invariants
 
-- HEAD image review uses bounded static raster decoding from one shared format table, source/render lineage and a
-  deterministic declaration gate. Two comprehensive vendor reports each attest L2–L5;
-  full filtered diff admission is 6,000 lines/128 KiB and chair stdin is at most 256 KiB.
-  Missing panel coverage publishes bounded unadjudicated observations without a chair call. Response presence, image failure and unusable report
-  output are separate. See `pr-review-head-images.md`; no tool or IAM permissions are added.
+- The required AI review uses the official Claude Code Action on Bedrock. Validate the
+  exact current commit, all four review areas and actual Read results for every page
+  and normalized HEAD image. Major and critical findings block the merge.
+  See `pr-review-head-images.md` for limits and the protected recovery path.
 - `release-safety-primitives.md` defines the active web read/controller contracts and transactional pending-SQL admission forced by every web-driven migration clone. Automatic calls reject missing ledgers under the lock and never call `initializeEmptyDatabase`, regardless of the template's init flag. Standalone empty-only bootstrap applies historical SQL and reader sync first; initialized DBs retain full pending checks. Function defaults (`now()`/`gen_random_uuid()`), ALTER/GRANT/views and non-transactional SQL require reviewed standalone migration, then a fresh web dispatch. No historical exemptions or automatic-baseline exception. Advisory-lock contention fails promptly; locks cover reader sync. Only transient reads retry within a shared budget; writes and identity/permission failures do not retry. Receipt verification gives the known old PRIMARY 15 seconds of visibility grace; start confirmation retains its separate 120-second bound.
 
 - Private S3 plans require the configured backend file, verified bucket posture and existing
@@ -100,7 +97,7 @@ erasing valid Read evidence. Source helper/tests and the role consumer catalog a
 - `deployment-audit.md` separates manual dev observations under backend-bound and workload-read sessions. Preserve identity/resource guards and private cleanup. Web and AgentCore observations do not prove applied versions or invocation readiness; observed SQL-reader types never establish complete inventory.
 - `runtime-foundation.md` covers activation and the strict release controller: host-only default, explicit targets, pinned catalog, budgets, expected hard stops, measured feasibility, CLI and fixed-code triage. Dev/preview private discovery requires explicit full-plan rollout and DNS permission; public DNS/certificates remain blocked. `runtime-ecr-bootstrap` creates three repositories.
 - The dev profile enforces read-only flags and real login/DB/host-registry proof at manual plan/apply; direct dev host-only settings require it. Automatic PR/push plans do not run the credentialed host probe. Manual dev/preview deployment blocks listed core teardown/replacement/forget and has no retirement mode; main is outside this development policy. Configuration checks are not live-access proof.
-- Before promoting the IAM changes from dev to main, require reviewed dev apply and live gateway/chat, worker-diagnosis and tagged SFN/Fargate evidence. Mock plans do not satisfy this promotion gate; this dev PR does not authorize production apply.
+- Before promoting the IAM changes from dev to main, require reviewed dev apply and live gateway/chat, worker-diagnosis and tagged SFN/Fargate evidence. Mock plans do not satisfy this promotion gate, and a dev apply never authorizes a production apply.
 - `scripts/v2/ci_tf_assets.py` shares one locked pg8000 installer with Terraform.
   Prepare invalidates markers and removes stale regular ZIPs, rejecting ZIP symlinks.
   Pack requires known planned ZIPs and binds plan/SHA/scope, paths, modes and hashes with
@@ -192,7 +189,7 @@ erasing valid Read evidence. Source helper/tests and the role consumer catalog a
   the full authenticated runtime gate before service A publication. Existing-web
   prepare does not create first web or bypass readiness; follow runtime adoption first.
 - Offline Terraform checks use `bash scripts/v2/terraform-test.sh` from the repo root:
-  Terraform 1.15.7, tracked working files copied in isolation, fresh `TF_DATA_DIR`,
+  Terraform 1.17.1, tracked working files copied in isolation, fresh `TF_DATA_DIR`,
   `init -backend=false`, mocked providers and no real backend. Test dependencies are declared in
   `scripts/v2/requirements-test.txt`; deployment Node tests also run in the shared merge script.
   Root-level Python command: `python3 -m pytest -q scripts/v2/test_ci_*.py`.
@@ -239,7 +236,7 @@ erasing valid Read evidence. Source helper/tests and the role consumer catalog a
   finalizers clean them; process/runner loss can prevent cleanup. Public diagnostics
   contain only fixed phases and validated HTTP status.
   Never relay Terraform diagnostics, response bodies or cookies, or reset a user's password.
-- Curl/OpenSSL, PyYAML and Terraform 1.15.7 are mandatory for the authenticated smoke fixtures;
+- Curl/OpenSSL, PyYAML and Terraform 1.17.1 are mandatory for the authenticated smoke fixtures;
   missing tools fail the shared runner. Only final fmt/validate diagnostics are informational.
 
 Collector verification binds the applied `sync_code_sha256` to the configured archive
@@ -260,7 +257,7 @@ The release controller synchronously collects every code-checked catalog type th
 
 ## Adding a Runbook
 1. Add it to this index.
-2. Use an existing runbook's structure as a template (`start-services.md`, `deploy-new-version.md`).
+2. Use a v2 symptom-organized runbook as a template (`legacy-web-image-recovery.md`, `web-release.md`).
 3. Follow the symptoms → diagnosis → action order strictly.
 4. Always include the related file paths.
 
@@ -281,13 +278,13 @@ distinction between operational degraded data and ineligible release evidence.
 Four lanes share Lambda/Steampipe limits; contention can fail the gate. Budgets are
 admission bounds, not guaranteed completion. Runtime foundation records a 43-type,
 57.461-second collection sample and its limits; it is not full live readiness.
-The catalog must include the pinned baseline (currently 43 names, source-AST checked);
+The catalog must include the pinned baseline (currently 49 names, source-AST checked);
 valid growth is allowed up to 128 types and every returned type needs strict proof.
 Both modes default to the enabled host only. Explicit applied targets require exact
 enabled host/member registration. Collect additionally requires measured SQL reachability
 with zero unreachable accounts and fresh account-bound EC2/CloudFront known-member evidence.
 Host-only/unmeasured counts remain null under explicit `account_reachability_scope`;
-CI permits host-only/null only for five source-AST-pinned SDK types, not 43-type
+CI permits host-only/null only for five source-AST-pinned SDK types, not 49-type
 coverage for every member. Terraform plan/apply onboarding
 alone allows approved subsets; apply derives scope from the restored saved plan.
 Runtime release never requests subset leniency. See `runtime-foundation.md#explicit-runtime-targets`.

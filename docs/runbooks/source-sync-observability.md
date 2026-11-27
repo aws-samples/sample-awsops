@@ -219,7 +219,7 @@ Refresh retains the previous graph, or source details do not explain partial cov
 **Interpretation:** inventory rows and the global per-type sweep ledger are read by one
 SQL statement through `pool.query`, so each page uses one PostgreSQL statement snapshot
 without holding a connection across application-managed transaction commands. Critical
-target-group/ECS-task/subnet pages require `consistency: "statement-snapshot"` and a stable
+target-group/ECS-task/subnet/network-interface pages require `consistency: "statement-snapshot"` and a stable
 succeeded ledger version across pages. The ledger is keyed under `self` for the whole
 account sweep; its count is neither the selected account's count nor this page's count.
 The collector marks that ledger running before mutating rows. This supports cross-page

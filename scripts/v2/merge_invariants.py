@@ -31,6 +31,25 @@ def tf_flag_defaults(tf_dir):
     return defaults
 
 
+# Non-boolean selectors that move data off AWS or widen a trust path: pinned default + tracked-tfvars scan.
+PINNED_SELECTORS = {"model_provider": "mixed"}
+
+
+def tf_selector_defaults(tf_dir):
+    """Return {variable_name: parsed_default} for every PINNED_SELECTORS variable."""
+    defaults = {}
+    for filename in sorted(os.listdir(tf_dir)):
+        if not filename.endswith(".tf"):
+            continue
+        with open(os.path.join(tf_dir, filename), encoding="utf-8") as f:
+            text = f.read()
+        for match, body in _iter_blocks(text, _VARIABLE_RE):
+            if match.group(1) in PINNED_SELECTORS:
+                default = _attribute_value(body, "default")
+                defaults[match.group(1)] = default.strip().strip('"') if default is not None else None
+    return defaults
+
+
 def ungated_resources(tf_file):
     """Return resource addresses whose body has no count or for_each gate line."""
     with open(tf_file, encoding="utf-8") as f:
@@ -75,6 +94,7 @@ def tracked_tfvars_enabling(root):
 
     offenders = []
     enabled_re = re.compile(r"^\s*([A-Za-z0-9_]+_enabled)\s*=\s*true\b", re.IGNORECASE)
+    selector_re = re.compile(r'^\s*(%s)\s*=\s*"([^"]*)"' % "|".join(map(re.escape, PINNED_SELECTORS)))
     for relpath in proc.stdout.splitlines():
         if not (relpath.endswith(".tfvars") or relpath.endswith(".auto.tfvars")):
             continue
@@ -85,6 +105,9 @@ def tracked_tfvars_enabling(root):
                 match = enabled_re.match(line)
                 if match:
                     offenders.append("%s:%d:%s" % (relpath, line_no, match.group(1)))
+                selector = selector_re.match(line)
+                if selector and selector.group(2) != PINNED_SELECTORS[selector.group(1)]:
+                    offenders.append("%s:%d:%s" % (relpath, line_no, selector.group(1)))
     return offenders
 
 

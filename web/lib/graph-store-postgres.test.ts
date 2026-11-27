@@ -5,12 +5,14 @@ import { Client, Pool } from 'pg';
 import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { publishServiceTopology } from './service-topology/store';
+import { rebuildServiceTopology } from './service-topology/read-published';
 import { rebuildGraph, rebuildInfraGraph, rebuildTraceGraph } from './graph-store';
 import * as graphStore from './graph-store';
 import { inventorySnapshot, inventoryAccounts, recordUnattempted, INFRA_TYPES } from './graph-inventory';
 import { HOST_ONLY_TREND_TYPES } from './trend-utils';
 import { readGraphState, writeGraphState } from './graph-state';
-import { graphTransaction, graphReadTransaction, GraphReadBusy, GraphReadDeadline } from './graph-transaction';
+import { servicePublicationTransaction, graphTransaction, graphReadTransaction, GraphReadBusy, GraphReadDeadline } from './graph-transaction';
 import type { ServiceGraphCall, SourceRead } from './trace-source';
 const api = vi.hoisted(() => ({ pool: null as unknown }));
 const producer = vi.hoisted(() => ({ invoke: vi.fn() }));
@@ -19,6 +21,7 @@ vi.mock('@/lib/mcp-lambda-invoke', () => ({ invokeMcpLambdaTool: (...args: unkno
 vi.mock('@/lib/auth', () => ({ verifyUser: async () => ({ sub: 'fixture' }) }));
 vi.mock('@/lib/db', () => ({ getPool: () => api.pool }));
 import { GET } from '../app/api/graph/route';
+import { GET as readServiceView } from '../app/api/topology/route';
 import { GET as inventoryGET } from '../app/api/inventory/[type]/route';
 
 // Opt-in, disposable PG17 server only. The Unix socket is mounted in a private task directory;
@@ -28,7 +31,9 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
   let pool: Pool;
   const migrations = resolve('../terraform/foundation/migrations');
   const flowTypes = ['route53', 'cloudfront', 'alb', 'nlb', 'target_group', 'waf', 'ec2',
-    'lambda', 'ecs_task', 's3', 'subnet', 'apigatewayv2_api', 'apigatewayv2_integration', 'cloudfront_vpc_origin'];
+    'lambda', 'ecs_task', 's3', 'subnet', 'apigatewayv2_api', 'apigatewayv2_integration', 'cloudfront_vpc_origin',
+    // IP-target ownership enrichment (eni-owner.ts); absent ledgers only degrade publication.
+    'eni', 'rds', 'rds_cluster', 'rds_proxy', 'vpc_endpoint', 'nat_gateway'];
   const requiredTypes = [...new Set([...flowTypes, ...INFRA_TYPES])];
   const now = Date.now();
   const recent = new Date(now - 60_000).toISOString();
@@ -63,7 +68,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
       await pool.query(readFileSync(resolve(migrations, readdirSync(migrations).find(f => f.endsWith(suffix))!), 'utf8'));
     for (const suffix of ['_topology_graph.sql', '_topology_class.sql', '_inventory_sync_freshness.sql',
       '_inventory_sync_unknown_attrs.sql', '_topology_graph_collection_state.sql',
-      '_topology_inventory_evidence.sql', '_graph_attempt_disclosure.sql', '_graph_read_indexes.sql', '_graph_projection_parity.sql'])
+      '_topology_inventory_evidence.sql', '_graph_attempt_disclosure.sql', '_graph_read_indexes.sql', '_graph_projection_parity.sql', '_service_topology.sql'])
       await pool.query(readFileSync(resolve(migrations, readdirSync(migrations).find(f => f.endsWith(suffix))!), 'utf8'));
   });
   beforeEach(async () => {
@@ -115,11 +120,167 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
         reasons: [], windowStartMs: endMs - mins * 60_000, windowEndMs: endMs }),
     }]);
 
+  it('isolates the longer transaction budget to manual service publication', async () => {
+    const timeouts = async (c: import('pg').PoolClient) => (await c.query(
+      "SELECT current_setting('statement_timeout') AS statement,current_setting('transaction_timeout') AS total"
+    )).rows[0];
+    expect(await servicePublicationTransaction(pool,timeouts)).toEqual({statement:'15s',total:'30s'});
+    expect(await graphTransaction(pool,false,timeouts)).toEqual({statement:'2s',total:'4s'});
+  });
+
+  it('admits database bridge endpoints only for relations visible in the service lens', async () => {
+    const id='335c9564-4a38-414e-9a12-d62f15ce9e99';
+    await pool.query(`INSERT INTO service_topology_snapshots(snapshot_id,scope_key,version,built_at,batch_ids,gaps,content_digest)
+      VALUES ($1,'self:all-regions:include-global',1,now(),'{}','{}','fixture')`,[id]);
+    await pool.query(`INSERT INTO service_topology_entities(snapshot_id,id,kind,label,layers,claim,evidence_refs)
+      VALUES ($1,'svc','service','orders','{trace}',false,'{}'),($1,'db','rds','db','{infra}',false,'{}')`,[id]);
+    await pool.query(`INSERT INTO service_topology_relations(snapshot_id,id,source,target,kind,layer,confidence,evidence_refs)
+      VALUES ($1,'bridge','svc','db','database-record','infra','observed','{}')`,[id]);
+    const read=async()=>(await pool.query("SELECT sql_reader.service_topology_read($1,'service','','',0,15) doc",[id])).rows[0].doc;
+    const hidden=await read();
+    expect(hidden.entities.map((e:{id:string})=>e.id)).toEqual(['svc']);
+    expect(hidden.relations).toHaveLength(0);
+    await pool.query("UPDATE service_topology_relations SET layer='trace' WHERE snapshot_id=$1",[id]);
+    const visible=await read();
+    expect(visible.entities).toHaveLength(2);
+    expect(visible.relations).toHaveLength(1);
+  });
+
+  it('withholds ok when a snapshot has no source references or cannot resolve them all', async () => {
+    const id = 'c84553fb-52bf-4684-8056-51be30f7d117';
+    const scope = 'self:all-regions:include-global';
+    await pool.query(`INSERT INTO topology_source_batches
+      (batch_id,scope_key,source_id,status,captured_at,stale,retained,capped,reasons)
+      VALUES ('manifest-valid',$1,'trace','ok',now(),false,false,false,'{}')`, [scope]);
+    await pool.query(`INSERT INTO service_topology_snapshots
+      (snapshot_id,scope_key,version,built_at,batch_ids,gaps,content_digest) VALUES ($1,$2,1,now(),'{}','{}','test')`,[id,scope]);
+    for (const [refs, gap] of [
+      [[], 'manifest:empty_source_batches'],
+      [['manifest-valid','unknown'], 'manifest:unresolved_source_batches'],
+      [['manifest-valid'], null],
+    ] as const) {
+      await pool.query('UPDATE service_topology_snapshots SET batch_ids=$2 WHERE snapshot_id=$1',[id,refs]);
+      const result = (await pool.query("SELECT sql_reader.service_topology_read($1,'service','','',0,15) AS doc",[id])).rows[0].doc;
+      expect(result.status).toBe(gap ? 'partial' : 'ok');
+      expect(result.gaps).toEqual(gap ? [gap] : []);
+      expect(result.sources.length).toBe(refs.length ? 1 : 0);
+    }
+  });
+
+  it('does not charge display-only listener rules to the saved flow rebuild', async () => {
+    await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,region,data,captured_at)
+      SELECT 'alb_listener_rule','rule-'||n,'fixture','{}',now() FROM generate_series(1,8200) n`);
+    const result = await rebuildGraph(pool);
+    expect(result.published).toBeGreaterThan(0);
+    expect(result.reasons).not.toContain('snapshot_limit');
+  });
+
+  it('keeps the focus and its edges on every page without skipping neighbors', async () => {
+    const id='20202020-1234-4123-8888-444444444444';
+    await pool.query(`INSERT INTO service_topology_snapshots(snapshot_id,scope_key,version,built_at,batch_ids,gaps,content_digest)
+      VALUES ($1,'self:all-regions:include-global',1,now(),'{}','{}','fixture')`,[id]);
+    await pool.query(`INSERT INTO service_topology_entities(snapshot_id,id,kind,label,layers,claim,evidence_refs)
+      SELECT $1,n::text,'service',n::text,'{trace}',false,'{}' FROM generate_series(0,203)n`,[id]);
+    await pool.query(`INSERT INTO service_topology_relations(snapshot_id,id,source,target,kind,layer,confidence,evidence_refs)
+      SELECT $1,n::text,'0',n::text,'calls','trace','observed','{}' FROM generate_series(1,203)n`,[id]);
+    const read=async(offset:number)=>(await pool.query("SELECT sql_reader.service_topology_read($1,'service','','0',$2,15) doc",[id,offset])).rows[0].doc;
+    const first=await read(0),second=await read(first.nextCursor);
+    expect(first.entities).toHaveLength(200);
+    expect(first.nextCursor).toBe(199);
+    expect(second.entities.map((n:{id:string})=>n.id)).toContain('0');
+    expect(second.relations).toHaveLength(4);
+    expect(second.nextCursor).toBeNull();
+    expect(new Set([...first.relations,...second.relations].map(r=>r.target)).size).toBe(203);
+  });
+
+  it('discloses a single oversize trace pair without returning its payload', async () => {
+    await trace();
+    await pool.query(`UPDATE topology_edges SET rel='queries',meta=jsonb_build_object(
+      'instance_observations',jsonb_build_array(jsonb_build_object('db_host',repeat('x',8200)))) WHERE class='trace'`);
+    const result=await rebuildServiceTopology(pool);
+    expect(result.partialInputs).toBe(true);
+    const sources=(await pool.query("SELECT (sql_reader.service_topology_read($1,'service','','',0,15))->'sources' AS src",[result.snapshotId])).rows[0].src;
+    expect(sources.find((m:{sourceId:string})=>m.sourceId==='trace')).toMatchObject({capped:true,reasons:expect.arrayContaining(['pair_size_limit'])});
+  });
+
+  it('publishes from actual Aurora-shaped rows, reuses an unchanged head and exposes the same bounded body to both reader roles', async () => {
+    await trace();
+    await build('infra');
+    await build('flow');
+    const first = await rebuildServiceTopology(pool);
+    expect(first.outcome).toBe('published');
+    expect(await rebuildServiceTopology(pool)).toMatchObject({ snapshotId: first.snapshotId, outcome: 'unchanged' });
+    const tableOid = (await pool.query("SELECT 'public.service_topology_entities'::regclass::oid AS id")).rows[0].id;
+    const views = [];
+    expect((await pool.query("SELECT has_function_privilege('awsops_sql_reader','sql_reader.service_topology_read(uuid,text,text,text,integer,integer)','EXECUTE') AS allowed")).rows[0].allowed).toBe(false);
+    expect((await pool.query("SELECT has_table_privilege('awsops_sql_reader','sql_reader.service_topology_entities','SELECT') AS allowed")).rows[0].allowed).toBe(false);
+    for (const role of ['awsops_topology_reader', 'awsops_web']) {
+      const c = await pool.connect();
+      try {
+        await c.query('BEGIN');
+        await c.query('SET LOCAL ROLE ' + role);
+        if (role === 'awsops_topology_reader') await c.query('SET LOCAL search_path=sql_reader,pg_catalog');
+        // Data API longValue is bigint. Exercise the same explicit conversion used by inventory-read.
+        const view = (await c.query("SELECT sql_reader.service_topology_read(NULL,'service','','',0,CAST($1::bigint AS integer)) AS body", [15])).rows[0].body;
+        expect(view.snapshotId).toBe(first.snapshotId);
+        expect(view.entities.map((n: any) => n.label).sort()).toEqual(['api','db']);
+        expect(view.relations).toHaveLength(1);
+        expect(view.relations[0]).toMatchObject({ metricCount: 7, kind: 'calls' });
+        expect(view.gaps).toContain('nfm:not_collected');
+        expect((await c.query("SELECT has_table_privilege(current_user,$1::oid,'INSERT') AS grant",[tableOid])).rows[0].grant).toBe(false);
+        views.push(view);
+      } finally { await c.query('ROLLBACK'); c.release(); }
+    }
+    expect(views[0]).toEqual(views[1]);
+    const flag=process.env.TOPOLOGY_ENTITIES_ENABLED;
+    try {
+      process.env.TOPOLOGY_ENTITIES_ENABLED='true';
+      const response=await readServiceView(new Request('http://localhost/api/topology?snapshot='+first.snapshotId));
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual(views[0]);
+    } finally { if(flag===undefined) delete process.env.TOPOLOGY_ENTITIES_ENABLED; else process.env.TOPOLOGY_ENTITIES_ENABLED=flag; }
+
+    await pool.query("UPDATE topology_graph_state SET status='partial' WHERE class='trace' AND account_id='self'");
+    const revised=await rebuildServiceTopology(pool);
+    expect(revised.snapshotId).not.toBe(first.snapshotId);
+    expect((await pool.query('SELECT body_snapshot_id FROM service_topology_snapshots WHERE snapshot_id=$1',
+      [revised.snapshotId])).rows[0].body_snapshot_id).toBe(first.snapshotId);
+    const empty={entities:[],relations:[],sources:[],gaps:[]};
+    await expect(publishServiceTopology(pool,empty,first.snapshotId,async()=>true)).rejects.toThrow('service_input_changed');
+    await expect(publishServiceTopology(pool,empty,revised.snapshotId,async()=>true)).rejects.toThrow('unconfirmed_empty_projection');
+    expect((await pool.query('SELECT snapshot_id FROM service_topology_heads')).rows[0].snapshot_id).toBe(revised.snapshotId);
+
+  });
+  it('discovers configured ECS services with no trace and keeps identically named services in different clusters separate', async () => {
+    const account='111111111111', region='us-east-1', base='arn:aws:ecs:'+region+':'+account+':cluster/';
+    const original=process.env.HOST_ACCOUNT_ID;
+    process.env.HOST_ACCOUNT_ID=account;
+    try {
+      await pool.query(`INSERT INTO inventory_sync_runs(resource_type,status,started_at,finished_at,last_success_at,row_count,unknown_attribute_count)
+        VALUES ('ecs_service','succeeded',$1,$1,$1,2,0)`,[recent]);
+      await pool.query("UPDATE inventory_sync_runs SET row_count=1 WHERE resource_type='ecs_task'");
+      for (const name of ['blue','green']) {
+        await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,account_id,region,data,captured_at)
+          VALUES ('ecs_service',$1,'self',$2,jsonb_build_object('cluster_arn',$3::text),$4)`,[base+name+'/orders',region,base+name,recent]);
+      }
+      await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,account_id,region,data,captured_at)
+        VALUES ('ecs_task','task-one','self',$1,$2::jsonb,$3)`,[region,JSON.stringify({cluster_arn:base+'blue',task_group:'service:orders',last_status:'RUNNING'}),recent]);
+      await hostParticipation();
+      const {snapshotId}=await rebuildServiceTopology(pool);
+      const read=async(focus='')=>(await pool.query("SELECT sql_reader.service_topology_read($1,'service','',$2,0,15) AS view",[snapshotId,focus])).rows[0].view;
+      const all=await read();
+      expect(all.entities).toHaveLength(2);
+      const blue=all.entities.find((e:any)=>e.evidenceRefs.some((r:string)=>r.includes('blue')));
+      const green=all.entities.find((e:any)=>e.id!==blue.id);
+      expect((await read(blue.id)).relations.map((r:any)=>r.kind)).toEqual(['member-of']);
+      expect((await read(green.id)).relations).toEqual([]);
+    } finally { if(original===undefined) delete process.env.HOST_ACCOUNT_ID; else process.env.HOST_ACCOUNT_ID=original; }
+  });
   it('retains trace rows while a legacy empty producer has no collection marker', async () => {
     await trace();
     const previous = await state('trace');
     producer.invoke.mockResolvedValue({ traces: [] });
-    const clock = vi.spyOn(Date, 'now').mockReturnValue(new Date(previous.attempted_at).getTime() + 1);
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(new Date(previous.attempted_at!).getTime() + 1);
     try {
       expect(await rebuildTraceGraph(pool, [new TempoTraceSource(7)]))
         .toMatchObject({ published: 0, retained: 1 });
@@ -175,7 +336,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     const cls = phase === 'trace_context' ? 'trace' : 'infra';
     const previous = await state(cls);
     const query = Client.prototype.query;
-    vi.spyOn(Client.prototype, 'query').mockImplementation(function (sql, ...args) {
+    vi.spyOn(Client.prototype, 'query').mockImplementation(function (this: Client, sql, ...args) {
       if ((phase === 'discover' && String(sql).includes('SELECT accounts.account_id'))
         || (phase === 'publish' && String(sql).includes('INSERT INTO topology_nodes'))
         || (phase === 'trace_context' && String(sql).includes("class = 'infra'")))
@@ -347,6 +508,16 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     expect(await build('infra')).toMatchObject({ published: 0, retained: 1 });
     expect(await state('infra')).toMatchObject({ status: 'error', retainedPrevious: true });
   });
+  it('reports inventory_running only when a still-running producer withholds publication', async () => {
+    await seed('infra');
+    expect(await build('infra')).toMatchObject({ published: 1, reasons: [] });
+    await pool.query(`UPDATE inventory_sync_runs SET status='running' WHERE resource_type='vpc'`);
+    const waiting = await build('infra');
+    expect(waiting).toMatchObject({ published: 0, retained: 1 });
+    expect(waiting.reasons).toContain('inventory_running');
+    await pool.query(`UPDATE inventory_sync_runs SET status='failed' WHERE resource_type='vpc'`);
+    expect((await build('infra')).reasons).not.toContain('inventory_running');
+  });
   it.each(['flow', 'infra'].flatMap(cls => ['failed', 'partial', 'running'].map(status => [cls, status])))(
     '%s member first publication includes aggregate %s with no member rows/history for that type', async (cls, status) => {
       await seed(cls, recent, '111122223333');
@@ -371,7 +542,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     await pool.query("UPDATE inventory_sync_runs SET row_count=2 WHERE resource_type='vpc'");
     const query = Client.prototype.query;
     let scans = 0;
-    vi.spyOn(Client.prototype, 'query').mockImplementation(function (sql, ...args) {
+    vi.spyOn(Client.prototype, 'query').mockImplementation(function (this: Client, sql, ...args) {
       if (String(sql).includes('count(*)::int AS count')) scans++;
       return Reflect.apply(query, this, [sql, ...args]);
     });
@@ -468,8 +639,8 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     await hostParticipation();
     const query = Client.prototype.query;
     let changed = false;
-    vi.spyOn(Client.prototype, 'query').mockImplementation(function (sql, ...args) {
-      const result = Reflect.apply(query, this, [sql, ...args]);
+    vi.spyOn(Client.prototype, 'query').mockImplementation(function (this: Client, sql, ...args) {
+      const result = Reflect.apply(query, this, [sql, ...args]) as unknown as Promise<unknown>;
       if (!changed && String(sql).includes('count(*)::int AS count')) {
         changed = true;
         return result.then(async rows => {
@@ -600,7 +771,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     expect(result).toMatchObject({ status: 'error', stale: true, captured_at: null,
       retainedPrevious: false, failureReason: 'source_read_failed' });
     expect(result.windowStartMs).toBeUndefined();
-    expect(result.sources[0].itemCount == null).toBe(true);
+    expect(result.sources![0].itemCount == null).toBe(true);
     expect((await pool.query("SELECT * FROM topology_nodes WHERE class='trace'")).rowCount).toBe(0);
   });
   it('does not replace trace evidence when the infra-read admission is busy', async () => {
@@ -640,7 +811,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
   it.each([0, -1000])('trace discloses superseded attempts (%s ms) without changing graph or state', async offset => {
     await trace();
     const previous = await state('trace');
-    const attemptClock = vi.spyOn(Date, 'now').mockReturnValue(new Date(previous.attempted_at).getTime() + offset);
+    const attemptClock = vi.spyOn(Date, 'now').mockReturnValue(new Date(previous.attempted_at!).getTime() + offset);
     expect(await trace([])).toMatchObject({ published: 0, skipped: 1, reasons: ['superseded'] });
     attemptClock.mockRestore(); // Compare freshness with the real read clock, not an older attempt clock.
     expect(await state('trace')).toEqual(previous);
@@ -683,7 +854,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     } else {
       expect(afterFailure).toMatchObject({ status: 'error', stale: true, retainedPrevious: true,
         failureReason: 'publication_failed' });
-      expect(new Date(afterFailure.captured_at).getTime()).toBe(new Date(previous.captured_at).getTime());
+      expect(new Date(afterFailure.captured_at!).getTime()).toBe(new Date(previous.captured_at!).getTime());
     }
     if (mode === 'timer') {
       expect(result.scheduled).toEqual([['timeout', 60000], ['interval', 60000]]);
@@ -839,7 +1010,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
   it('records budget-skipped source reads without changing the saved graph', async () => {
     await seed('infra'); await build('infra');
     const previous = await state('infra');
-    const clock = vi.spyOn(Date, 'now').mockReturnValue(new Date(previous.attempted_at).getTime() + 1000);
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(new Date(previous.attempted_at!).getTime() + 1000);
     const timer = vi.spyOn(performance, 'now').mockReturnValueOnce(0).mockReturnValue(31_000);
     try {
       expect(await build('infra')).toMatchObject({ skipped: 1, reasons: ['time_limit'] });
@@ -958,7 +1129,8 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     const nodes = (await pool.query("SELECT * FROM topology_nodes WHERE account_id='self' AND class='infra' ORDER BY id")).rows;
     expect(nodes.map(node => node.id)).toEqual(['subnet:subnet-lost', 'vpc:vpc-kept']);
     expect(previous).toMatchObject({ status: 'ok', stale: false, retainedPrevious: false });
-    expect(previous.publishedSources).toHaveLength(INFRA_TYPES.length);
+    // Enrichment sources (rds_cluster, rds_proxy) are evaluated separately, never published sources.
+    expect(previous.publishedSources).toHaveLength(INFRA_TYPES.filter(type => !['rds_cluster', 'rds_proxy'].includes(type)).length);
 
     await pool.query(`DELETE FROM inventory_resources WHERE resource_type='subnet';
       DELETE FROM inventory_sync_runs WHERE resource_type='subnet';`);
@@ -969,7 +1141,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
       const result = await state('infra');
       expect(result).toMatchObject({ status: 'unavailable', stale: true, retainedPrevious: true,
         captured_at: previous.captured_at, publishedSources: previous.publishedSources });
-      expect(new Date(result.attempted_at).getTime()).toBe(now + offset);
+      expect(new Date(result.attempted_at!).getTime()).toBe(now + offset);
       expect(result.sources).toContainEqual(expect.objectContaining({
         sourceId: 'inventory:subnet', status: 'unavailable', producerStatus: 'unknown', reasons: ['missing_ledger'],
       }));
@@ -984,7 +1156,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     clock.mockImplementation(() => new Date().getTime());
     const confirmed = await state('infra');
     expect(confirmed).toMatchObject({ status: 'ok', stale: false, retainedPrevious: false });
-    expect(new Date(confirmed.captured_at).getTime()).toBeGreaterThan(new Date(previous.captured_at).getTime());
+    expect(new Date(confirmed.captured_at!).getTime()).toBeGreaterThan(new Date(previous.captured_at!).getTime());
     expect(confirmed.publishedSources).toContainEqual(expect.objectContaining({
       sourceId: 'inventory:subnet', status: 'empty', producerStatus: 'succeeded', itemCount: 0, reasons: [],
     }));
@@ -1059,7 +1231,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
     await graphTransaction(pool, false, async client => {
       await client.query('SELECT pg_advisory_xact_lock($1)', [0x696e6672]);
       expect(await writeGraphState(client, 'self', {
-        status: 'error', publish: false, attemptedAt: new Date(previous.attempted_at).toISOString(), details: {},
+        status: 'error', publish: false, attemptedAt: new Date(previous.attempted_at!).toISOString(), details: {},
       }, 'infra' as never)).toBe(false);
     });
     expect((await pool.query('SELECT * FROM topology_nodes')).rowCount).toBeGreaterThan(0);
@@ -1144,7 +1316,7 @@ describe.skipIf(!socket)('inventory graph publication on PostgreSQL', () => {
       } };
     } };
     const body = await (await GET(new Request('http://localhost/api/graph?class=infra'))).json();
-    expect(body.collection.captured_at).toBe(new Date(previous.captured_at).toISOString());
+    expect(body.collection.captured_at).toBe(new Date(previous.captured_at!).toISOString());
     expect(body.nodes.length).toBeGreaterThan(0);
     expect((await pool.query('SELECT * FROM topology_nodes')).rows).toEqual([]);
   });

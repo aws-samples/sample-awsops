@@ -173,8 +173,6 @@ curl -X POST '/awsops/api/alert-webhook?source=generic' \
 
 ## 참고
 
-- ADR-022: 알림 상관 분석 정책
-- ADR-026: HMAC 시크릿 active+standby 2-키 정책
 - `src/lib/alert-types.ts` — 5가지 소스 정규화 로직
 - `src/lib/alert-correlation.ts` — 그룹화/중복 제거/에스컬레이션
 - `src/lib/alert-diagnosis.ts` — Bedrock 진단 오케스트레이션

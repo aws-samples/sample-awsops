@@ -1,4 +1,4 @@
-"""AWSops v2 ADR-032 — incident_stage_failed Lambda (the SM Catch target).
+"""AWSops v2 ADR-006[legacy 032] — incident_stage_failed Lambda (the SM Catch target).
 
 The SM's StageFailed path invokes this then the reused P2 status_updater (which terminalizes the
 worker_jobs row — SFN cannot write VPC Aurora directly). This Lambda marks the failing

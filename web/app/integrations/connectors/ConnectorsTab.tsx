@@ -8,7 +8,7 @@ import { useI18n } from '@/components/shell/LanguageProvider';
 import { MCP_PRESETS } from '@/lib/mcp-presets';
 
 // Connectors tab: external SERVICE integrations — distinct from observability Datasources and from
-// Skills. Read + GOVERNED write (write is propose-only / flag-OFF per ADR-040/041 — surfaced as a
+// Skills. Read + GOVERNED write (write is propose-only / flag-OFF per ADR-007[legacy 040] — surfaced as a
 // disabled note here). ADR-017 — the catalog is curated official-vendor MCP presets (Datadog/
 // ClickHouse/Tempo/Jaeger/Grafana/Dynatrace/Splunk/New Relic) plus Notion (pre-existing, hosted MCP
 // is OAuth-only so it stays on the direct token path). Connect = paste one token; the same PUT

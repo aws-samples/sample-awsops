@@ -59,6 +59,29 @@ async function select(label: string) {
 }
 
 describe('E2eGraphCanvas', () => {
+  it.each([
+    ['runtime', 'aws_verified'], ['model', undefined], ['queue', 'telemetry_claim'], ['service', 'telemetry_claim'],
+  ])('discloses unverified %s claims on both the card and selected-node details', async (kind, provenance) => {
+    const claim: E2eNode = { id: 'claim', kind: kind!, label: 'reported target', layer: 'service',
+      meta: { identityProvenance: provenance, claimedAccountId: '123456789012', claimedRegion: 'ap-northeast-2' } };
+    const { container } = render(<E2eGraphCanvas graph={{ ...graph, nodes: [claim], edges: [] }} />);
+    const notice = 'Telemetry claim · AWS identity unverified';
+    await waitFor(() => expect(container.querySelector(`[data-e2e-kind="${kind}"]`)?.textContent).toContain(notice));
+    const node = vi.mocked(ReactFlow).mock.lastCall?.[0].nodes?.find(n => n.id === 'claim');
+    expect(Number(node?.style?.height)).toBeGreaterThan(76);
+    const detail = await select('reported target');
+    expect(detail.getByText(notice)).toBeTruthy();
+  });
+
+  it('keeps nested network endpoint fields without an object-valued inference endpoint row', async () => {
+    const nodes = graph.nodes.map(node => node.id === 'p1'
+      ? { ...node, meta: { endpoint: { ip: '10.0.1.1', podName: 'pod-a' } } } : node);
+    render(<E2eGraphCanvas graph={{ ...graph, nodes }} />);
+    const detail = await select('shop/pod-a');
+    expect(detail.getByText('10.0.1.1')).toBeTruthy();
+    expect(detail.queryByText('[object Object]')).toBeNull();
+  });
+
   it.each(['ko', 'en', 'zh', 'ja'] as const)('names the actual context control in the %s guide', lang => {
     const label = applyTerms(lang, '참고 정보 (캐시된 구성·경유 구성요소)');
     const path = lang === 'ko' ? '../../../docs-site/docs/resources/topology.md'
@@ -66,7 +89,7 @@ describe('E2eGraphCanvas', () => {
     localStorage.setItem('awsops-lang', lang);
     try {
       render(<LanguageProvider><E2eGraphCanvas graph={graph} /></LanguageProvider>);
-      expect(screen.getByRole('checkbox', { name: label, exact: true })).toBeTruthy();
+      expect(screen.getByRole('checkbox', { name: label })).toBeTruthy();
       const guide = readSource(path);
       expect(guide).toContain(`**${label}**`);
       expect(guide.split(label).length - 1).toBeGreaterThanOrEqual(2);
@@ -76,10 +99,10 @@ describe('E2eGraphCanvas', () => {
     const built = buildE2eGraph({
       account: 'self', configured: { nodes: [], edges: [] }, services: null,
       network: [{ metric: 'DATA_TRANSFERRED', unit: 'Bytes', category: 'INTER_AZ',
-        monitor: 'fixture', cluster: 'fixture', rangeSec: 60, rows:
+        monitor: 'fixture', cluster: 'fixture', rangeSec: 60, capped: false, rows:
         ['shop', 'payments'].map(podNamespace => ({
           local: { podNamespace, podName: 'web-1' }, remote: { serviceName: 'external-api' },
-          value: 1, unit: 'Bytes', category: 'INTER_AZ',
+          value: 1, unit: 'Bytes', category: 'INTER_AZ', traversed: [], traversedIds: [],
         })) }],
     });
     render(<E2eGraphCanvas graph={built} />);
@@ -100,7 +123,7 @@ describe('E2eGraphCanvas', () => {
     await waitFor(() => {
       const props = vi.mocked(ReactFlow).mock.lastCall?.[0];
       const target = built.nodes.find(node => node.kind === 'target')!;
-      expect(props?.nodes.find(node => node.id === target.id)?.data.label).toBeTruthy();
+      expect(props?.nodes?.find(node => node.id === target.id)?.data.label).toBeTruthy();
       expect(screen.getAllByText(/구성 · 식별 보류/).length).toBeGreaterThan(0);
     });
   });
@@ -197,7 +220,7 @@ describe('E2eGraphCanvas', () => {
     expect(built.nodes.filter(node => ids.has(node.id) && node.kind === 'workload')).toHaveLength(2);
     const bounds = getNodesBounds(fitted);
     for (const [width, height] of [[1294, 900], [1294, 478], [900, 478]]) {
-      const viewport = getViewportForBounds(bounds, width, height, options.minZoom!, options.maxZoom!, options.padding);
+      const viewport = getViewportForBounds(bounds, width, height, options.minZoom!, options.maxZoom!, options.padding!);
       if (height === 900) expect(viewport.zoom).toBeGreaterThanOrEqual(0.7);
       expect(bounds.x * viewport.zoom + viewport.x).toBeGreaterThanOrEqual(0);
       expect((bounds.x + bounds.width) * viewport.zoom + viewport.x).toBeLessThanOrEqual(width);
@@ -300,7 +323,7 @@ describe('E2eGraphCanvas', () => {
     render(<E2eGraphCanvas graph={{ ...graph, nodes: [
       { id: 't', kind: 'target', layer: 'configuration', label: 'target', meta: { pod: 'web-2', namespace: 'shop', resolved: 'eks' } },
       { id: 'w', kind: 'workload', layer: 'service', label: 'deployment', meta: { pods: ['web-1', 'web-2'] } },
-    ], edges: [{ id: 'identity', source: 't', target: 'w', evidence: 'identity', relation: 'same-identity',
+    ], edges: [{ id: 'identity', source: 't', target: 'w', evidence: 'identity', relation: 'same-identity', directed: false,
       meta: { cluster: 'app', namespace: 'shop', pod: 'web-2' } }] }} />);
     expect((await select('target')).getByText('web-2')).toBeTruthy();
     const workload = await select('deployment');
@@ -618,7 +641,7 @@ describe('E2eGraphCanvas', () => {
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'needle' } });
     await screen.findByText('표시 한도로 제한된 관측 (분류별): INTER_AZ: 1');
     const props = vi.mocked(ReactFlow).mock.lastCall?.[0];
-    expect(props?.nodes.some(node => node.id === 'f1')).toBe(true);
+    expect(props?.nodes?.some(node => node.id === 'f1')).toBe(true);
     expect(props?.edges).toHaveLength(0);
   });
 

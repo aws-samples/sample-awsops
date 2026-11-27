@@ -1,5 +1,5 @@
 // web/app/api/incidents/route.ts
-// ADR-032 incident reads + manual trigger (admin-gated). Mirrors the admin-gate +
+// ADR-006[legacy 032] incident reads + manual trigger (admin-gated). Mirrors the admin-gate +
 // `dynamic = 'force-dynamic'` idiom from web/app/api/actions/route.ts.
 //
 // SAFETY (autonomous incident lifecycle shipped OFF):
@@ -52,7 +52,7 @@ export async function POST(req: NextRequest) {
   const alertName = String(body?.title ?? text).slice(0, 256);
   const now = new Date().toISOString();
   const id = createHash('sha256')
-    .update(`manual:${alertName}:${[...services].sort().join(',')}:${[...resources].sort().join(',')}`)
+    .update(`manual:${alertName}:${services.toSorted().join(',')}:${resources.toSorted().join(',')}`)
     .digest('hex').slice(0, 16);
 
   // Synthetic, source='manual' event. Descriptive only; carries no control surface.

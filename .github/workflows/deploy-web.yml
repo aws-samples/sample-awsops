@@ -137,7 +137,7 @@ jobs:
       DEV_ROLE: ${{ secrets.AWS_CI_BUILD_DEV_ROLE_ARN }}
       MAIN_TFVARS_B64: ${{ secrets.TF_TFVARS }}
       DEV_TFVARS_B64: ${{ secrets.TF_TFVARS_DEV }}
-      USER_TFVARS_B64: ${{ secrets[format('TF_TFVARS_PREVIEW_{0}', github.ref_name)] }}
+      USER_TFVARS_B64: ${{ github.ref_name == 'atomoh' && secrets.TF_TFVARS_PREVIEW_atomoh || github.ref_name == 'ssminji' && secrets.TF_TFVARS_PREVIEW_ssminji || github.ref_name == 'whchoi' && secrets.TF_TFVARS_PREVIEW_whchoi || '' }}
     steps:
       - name: Validate database verification ref
         env:
@@ -155,9 +155,20 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Ensure Node runtime libraries
+        # Node 26 linux-arm64 links libatomic.so.1, which the self-hosted runner image lacks.
+        run: |
+          has_libatomic() { { /sbin/ldconfig -p 2>/dev/null || ldconfig -p 2>/dev/null; } | grep -q 'libatomic\.so\.1'; }
+          if ! has_libatomic; then
+            # An install failure (no passwordless sudo, apt lock, mirror outage) falls through to
+            # the explicit check below instead of aborting with an opaque apt error.
+            { sudo -n apt-get update -qq \
+              && sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libatomic1; } || true
+          fi
+          has_libatomic || { echo "::error::libatomic.so.1 is unavailable on this runner"; exit 1; }
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 26
 
       - name: Select the branch's stack (fail-closed — no cross-branch fallback)
         id: sel
@@ -317,7 +328,7 @@ jobs:
           python-version: "3.12"
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 26
       - name: Select exact branch role and project
         id: target
         run: |
@@ -409,8 +420,8 @@ jobs:
       MAIN_TFVARS_B64: ${{ secrets.TF_TFVARS }}
       DEV_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL_DEV }}
       DEV_TFVARS_B64: ${{ secrets.TF_TFVARS_DEV }}
-      USER_BACKEND_B64: ${{ secrets[format('TF_BACKEND_HCL_PREVIEW_{0}', github.ref_name)] }}
-      USER_TFVARS_B64: ${{ secrets[format('TF_TFVARS_PREVIEW_{0}', github.ref_name)] }}
+      USER_BACKEND_B64: ${{ github.ref_name == 'atomoh' && secrets.TF_BACKEND_HCL_PREVIEW_atomoh || github.ref_name == 'ssminji' && secrets.TF_BACKEND_HCL_PREVIEW_ssminji || github.ref_name == 'whchoi' && secrets.TF_BACKEND_HCL_PREVIEW_whchoi || '' }}
+      USER_TFVARS_B64: ${{ github.ref_name == 'atomoh' && secrets.TF_TFVARS_PREVIEW_atomoh || github.ref_name == 'ssminji' && secrets.TF_TFVARS_PREVIEW_ssminji || github.ref_name == 'whchoi' && secrets.TF_TFVARS_PREVIEW_whchoi || '' }}
     steps:
       - name: Validate database verification ref
         env:
@@ -430,13 +441,24 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Ensure Node runtime libraries
+        # Node 26 linux-arm64 links libatomic.so.1, which the self-hosted runner image lacks.
+        run: |
+          has_libatomic() { { /sbin/ldconfig -p 2>/dev/null || ldconfig -p 2>/dev/null; } | grep -q 'libatomic\.so\.1'; }
+          if ! has_libatomic; then
+            # An install failure (no passwordless sudo, apt lock, mirror outage) falls through to
+            # the explicit check below instead of aborting with an opaque apt error.
+            { sudo -n apt-get update -qq \
+              && sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libatomic1; } || true
+          fi
+          has_libatomic || { echo "::error::libatomic.so.1 is unavailable on this runner"; exit 1; }
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 26
 
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.15.7
+          terraform_version: 1.17.1
           terraform_wrapper: false
 
       - name: Select the branch's stack (fail-closed — no cross-branch fallback)

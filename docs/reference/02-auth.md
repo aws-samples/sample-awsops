@@ -11,7 +11,7 @@ v2는 **Cognito 인증을 CloudFront 엣지 앞단에 배치**하여 공개 경�
 - **Cognito User Pool** `ap-northeast-2_EXAMPLE01` — `username_attributes = ["email"]`, MFA off, password policy min-8 / upper / lower / number, **symbols NOT required** (Cognito onboarding quirk).
 - **App client** `EXAMPLECLIENTID0123456789` — **public client, no secret** (`generate_secret = false`); OAuth `code` flow with PKCE, scopes `openid email profile`. Callback `https://<domain>/_callback`, logout `https://<domain>/`.
 - **Hosted-UI domain** `a-ops-v2-auth-123456789012` → `https://a-ops-v2-auth-123456789012.auth.ap-northeast-2.amazoncognito.com`.
-- **Lambda@Edge** `awsops-v2-cognito-auth` — `python3.12`, **`us-east-1`** (the only region Lambda@Edge permits), 128 MB / 5 s, attached to the CloudFront distribution at the **`viewer-request`** event (fires before cache lookup).
+- **Lambda@Edge** `awsops-v2-cognito-auth` — `python3.14`, **`us-east-1`** (the only region Lambda@Edge permits), 128 MB / 5 s, attached to the CloudFront distribution at the **`viewer-request`** event (fires before cache lookup).
   - Verifies the ID token via **pure-python RS256** (RSASSA-PKCS1-v1_5 + SHA-256) against Cognito's **JWKS** (`/.well-known/jwks.json`, cached in a module global) — no extra deps, stays under the 1 MB viewer-request limit.
   - Validates claims: `iss`, `aud` (= client id), `token_use == 'id'`, `exp`/`iat`/`nbf`.
   - Enforces OAuth **`state`** + **PKCE** (S256 challenge; verifier stored in a short-lived HMAC-signed `awsops_flow` cookie) — CSRF defense, and no client secret is compiled into the edge code (HMAC `state_key` injected via `random_password` at apply).
@@ -22,7 +22,7 @@ v2는 **Cognito 인증을 CloudFront 엣지 앞단에 배치**하여 공개 경�
 
 ## Decisions (ADRs) / 결정
 
-- [ADR-002 — Auth & Login (Cognito + Lambda@Edge)](../decisions/002-auth-and-login.md) — Accepted (2026-04-22). Edge-level rejection over ALB-native / Next.js-middleware / SigV4 alternatives; `viewer-request` over `origin-request`; HttpOnly cookie; decode-only at the app trusting the edge.
+- ADR-002 — Auth & Login (Cognito + Lambda@Edge) — Accepted (2026-04-22). Edge-level rejection over ALB-native / Next.js-middleware / SigV4 alternatives; `viewer-request` over `origin-request`; HttpOnly cookie; decode-only at the app trusting the edge.
   - **2026-06-03 "Post-acceptance deviation":** the v1 edge was **exp-only** (base64 decode + expiry, no signature verification), so the "decode-only app trusts the edge" claim was not actually backed by signature verification. v2 (`feat/v2-architecture-design`, commit `8313b0e`) hardens the edge to **JWKS RS256 signature verification** + issuer/audience checks + OAuth `state` + PKCE public client (secret dropped). Operators on v1 should treat edge auth as exp-only until v2 is deployed.
 
 ## Key files / 핵심 파일

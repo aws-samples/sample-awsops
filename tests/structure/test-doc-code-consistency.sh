@@ -34,20 +34,22 @@ else
   notok "host onboarding must explicitly retain AdminView, not member View"
 fi
 
-# 2. Member guidance must include the node permission missing from View.
+# 2. Member guidance: View only (no Secrets/AdminView), no kubectl/RBAC step; nodes come
+#    from EC2/node-group APIs via the registered member read role.
 member_line=$(grep -F -- "- **EKS member onboarding**:" "$DOC")
 if [[ "$member_line" == *"Access Entry + AmazonEKSViewPolicy"* ]] &&
-   [[ "$member_line" == *"awsops:eks-readonly"* ]] &&
+   [[ "$member_line" != *"awsops:eks-readonly"* ]] &&
    [[ "$member_line" != *"AmazonEKSAdminViewPolicy"* ]]; then
-  ok "member onboarding documents View plus minimal node-read RBAC"
+  ok "member onboarding documents View-only Access Entry without node RBAC"
 else
-  notok "member onboarding must document View plus node RBAC without AdminView"
+  notok "member onboarding must document View-only Access Entry without AdminView or node RBAC"
 fi
-if grep -Fq 'AmazonEKSViewPolicy' web/lib/eks-access.ts &&
-   grep -Fq 'awsops:eks-readonly' web/lib/eks-member-rbac.ts; then
-  ok "member guide and generated RBAC implement the documented policy/group"
+if grep -Fq 'cluster-access-policy/AmazonEKSViewPolicy' web/lib/eks-access.ts &&
+   ! grep -Eq 'kubernetes-groups|kubectl --context|update-kubeconfig' web/lib/eks-access.ts &&
+   grep -Fq 'listAwsApiNodes' web/lib/eks-incluster.ts; then
+  ok "member guide is View-only and nodes fall back to the AWS-API view"
 else
-  notok "member guide or generated node-read group is missing"
+  notok "member guide must be View-only and nodes must fall back to the AWS-API view"
 fi
 
 echo "# $PASS passed, $FAIL failed, $N total"

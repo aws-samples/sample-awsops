@@ -196,7 +196,7 @@ describe('momChangePctDailyUtc (alert-surface UTC math)', () => {
 });
 
 describe('looksLikeCeUnconfigured (gap L197)', () => {
-  const zeroTrend = [{ date: '2026-08-30', amount: 0 }, { date: '2026-08-31', amount: 0 }] as { amount: number }[];
+  const zeroTrend = [{ date: '2026-08-30', amount: 0 }, { date: '2026-08-31', amount: 0 }];
   const emptyMonths = [
     { month: '2026-08', byService: [] },
     { month: '2026-09', byService: [] },

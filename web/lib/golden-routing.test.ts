@@ -5,7 +5,7 @@ import golden from './fixtures/golden-routing.json';
 
 const VALID = new Set(SECTIONS.map((s) => s.key));
 
-describe('golden-routing fixture (ADR-038 §5)', () => {
+describe('golden-routing fixture (ADR-003[legacy 038] §5)', () => {
   it('every expect key is a valid v2 section key', () => {
     for (const c of golden.cases) {
       for (const k of c.expect) expect(VALID.has(k), `${c.q} → ${k}`).toBe(true);

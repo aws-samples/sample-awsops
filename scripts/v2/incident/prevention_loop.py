@@ -1,4 +1,4 @@
-"""AWSops v2 ADR-032 Phase 4 — cross-incident proactive-prevention feedback loop.
+"""AWSops v2 ADR-006[legacy 032 Phase 4] — cross-incident proactive-prevention feedback loop.
 
 Periodic (gated EventBridge) Lambda. Reads recent incident/RCA history, detects RECURRING
 patterns (rca.category x primary service over a window, recurrence >= threshold), and UPSERTs

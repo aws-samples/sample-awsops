@@ -4,7 +4,7 @@ const listInCluster = vi.fn();
 vi.mock('@/lib/auth', () => ({ verifyUser: (...a: unknown[]) => verifyUser(...a) }));
 vi.mock('@/lib/eks-incluster', async () => {
   const actual = await vi.importActual<typeof import('@/lib/eks-incluster')>('@/lib/eks-incluster');
-  return { ...actual, listInCluster: (...a: unknown[]) => listInCluster(...a) };
+  return { ...actual, listInCluster: (...a: unknown[]) => listInCluster(...a), listNodes: async (c: string) => ({ rows: await listInCluster(c, 'nodes'), source: 'kubernetes' as const }), };
 });
 
 const req = (url: string, cookie = 'awsops_token=t') => new Request(url, { headers: { cookie } });

@@ -3,7 +3,77 @@ AWS FinOps Optimization MCP Lambda - Compute Optimizer, RI/SP Recommendations, C
 AWS FinOps 최적화 MCP 람다 - Compute Optimizer, RI/SP 추천, Cost Optimization Hub, Trusted Advisor
 """
 import json
+import math
+from datetime import datetime, timezone
 from cross_account import get_client, get_role_arn, resolve_tool_name
+
+
+def _known_number(value, maximum=None):
+    if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+        return None
+    return value if maximum is None or value <= maximum else None
+
+
+def _bounded_text(value, limit=128):
+    return value if (isinstance(value, str) and 0 < len(value) <= limit
+                     and not any(ord(char) < 32 or ord(char) == 127 for char in value)) else None
+
+
+def _ranked_option(options):
+    """Provider rank is authoritative; response list order is not."""
+    options = [option for option in options if isinstance(option, dict)]
+    ranked = [option for option in options if type(option.get("rank")) is int and option["rank"] >= 0]
+    return min(ranked, key=lambda option: option["rank"]) if ranked else (options[0] if options else {})
+
+
+def _utilization_metrics(value):
+    records = value if isinstance(value, list) else []
+    projected = []
+    for metric in records[:32]:
+        if not isinstance(metric, dict):
+            continue
+        name = _bounded_text(metric.get("name")), _bounded_text(metric.get("statistic"))
+        number = _known_number(metric.get("value"))
+        if all(name) and number is not None:
+            projected.append({"name": name[0], "statistic": name[1], "value": number})
+    return projected, not isinstance(value, list) or len(projected) != len(records)
+
+
+def _recommendation_evidence(record, option, resource_type):
+    captured = record.get("lastRefreshTimestamp")
+    if isinstance(captured, str):
+        try:
+            captured = datetime.fromisoformat(captured.replace("Z", "+00:00"))
+        except ValueError:
+            captured = None
+    timestamp = (captured.replace(tzinfo=timezone.utc) if captured.tzinfo is None else captured).isoformat() \
+        if isinstance(captured, datetime) else None
+    metrics, incomplete = _utilization_metrics(record.get("utilizationMetrics"))
+    projected, projected_incomplete = _utilization_metrics(option.get("projectedUtilizationMetrics"))
+    names = {metric["name"] for metric in metrics}
+    coverage = {
+        "cpu": bool(names & {"Cpu", "CPU"}), "memory": "Memory" in names,
+        # I/O pressure only: storage *capacity* (EBSVolumeStorageSpaceUtilization, VolumeBytesUsed)
+        # is not I/O evidence and must not satisfy the downsize gate.
+        "io": any((name.startswith(("EBS_", "DISK_", "NETWORK_", "EBSVolume", "Network", "StorageNetwork"))
+                   and name != "EBSVolumeStorageSpaceUtilization")
+                  or name in {"VolumeReadIOPs", "VolumeWriteIOPs", "ReadIOPSEphemeralStorage", "WriteIOPSEphemeralStorage"}
+                  for name in names),
+    }
+    return {
+        "lastRefreshTimestamp": timestamp,
+        "lookbackDays": _known_number(record.get(
+            "lookBackPeriodInDays" if resource_type == "ec2" else "lookbackPeriodInDays"), 3650),
+        "recommendationRank": option.get("rank") if type(option.get("rank")) is int and option["rank"] >= 0 else None,
+        "performanceRisk": _known_number(option.get("performanceRisk"), 5),
+        "currentPerformanceRisk": _bounded_text(record.get(
+            "currentPerformanceRisk" if resource_type == "ec2" else "currentInstancePerformanceRisk"), 64),
+        "utilizationMetrics": metrics,
+        "projectedUtilizationMetrics": projected,
+        "missingUtilizationMetrics": [name for name, known in coverage.items() if not known],
+        "utilizationTruncated": incomplete,
+        "projectedUtilizationTruncated": projected_incomplete,
+    }
 
 
 def _monthly_savings(option):
@@ -57,7 +127,7 @@ def lambda_handler(event, context):
                     recs = []
                     for r in resp.get("instanceRecommendations", []):
                         options = r.get("recommendationOptions", [])
-                        top = options[0] if options else {}
+                        top = _ranked_option(options)
                         recs.append({
                             "instanceArn": r.get("instanceArn", ""),
                             "instanceName": r.get("instanceName", ""),
@@ -65,7 +135,7 @@ def lambda_handler(event, context):
                             "finding": r.get("finding", ""),
                             "recommendedType": top.get("instanceType", ""),
                             **_monthly_savings(top),
-                            "performanceRisk": top.get("performanceRisk", 0),
+                            **_recommendation_evidence(r, top, "ec2"),
                             "migrationEffort": top.get("migrationEffort", ""),
                         })
                     results["ec2"] = _rightsizing_result(resp, recs)
@@ -78,7 +148,7 @@ def lambda_handler(event, context):
                     recs = []
                     for r in resp.get("rdsDBRecommendations", []):
                         options = r.get("instanceRecommendationOptions", [])
-                        top = options[0] if options else {}
+                        top = _ranked_option(options)
                         recs.append({
                             "resourceArn": r.get("resourceArn", ""),
                             "currentDBInstanceClass": r.get("currentDBInstanceClass", ""),
@@ -86,6 +156,7 @@ def lambda_handler(event, context):
                             "finding": r.get("instanceFinding", ""),
                             "recommendedDBInstanceClass": top.get("dbInstanceClass", ""),
                             **_monthly_savings(top),
+                            **_recommendation_evidence(r, top, "rds"),
                         })
                     results["rds"] = _rightsizing_result(resp, recs)
                 except Exception as e:

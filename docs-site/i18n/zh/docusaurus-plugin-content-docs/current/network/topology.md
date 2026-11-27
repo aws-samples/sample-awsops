@@ -16,27 +16,30 @@ import Screenshot from '@site/src/components/Screenshot';
 
 ### 视图切换
 
-通过顶部开关在两种视图之间切换：
+在顶部选择四个标签页之一：
 
 | 视图 | 对象 | 用途 |
 |----|------|------|
-| **Infrastructure** | AWS 资源 | 可视化 VPC、EC2、RDS、ELB 等的关系 |
-| **Kubernetes** | EKS 工作负载 | Pod、Service、Ingress、Node 的关系 |
+| **VPC 连接** | VPC 连接配置 | 查看 TGW 和对等连接 |
+| **资源布局图（默认）** | 已保存的 AWS 资源 | 按 VPC 和子网筛选、翻页 |
+| **基础设施地图** | 已保存的 AWS 资源 | 查看资源层级 |
+| **K8s 地图** | EKS 工作负载 | 按命名空间分组的 Service 图 (DNS → Gateway → Service → 数据存储) |
 
 ### Infrastructure 视图
 
 提供两种显示模式：
 
-**Map View（默认）**
+**Map View**
 - 以 5 列布局展示资源层级
 - External (IGW/TGW) → VPCs → Subnets → Compute → NAT
 - 通过点击/搜索高亮相关资源
 
 **Graph View**
-- 基于 React Flow 的节点-边图
-- 拖拽移动节点
-- 通过缩放/平移进行探索
-- 使用 MiniMap 查看整体结构
+- **资源布局图**是默认标签页，首先显示已保存资源最多的 VPC。
+- 按 VPC、子网和资源类型筛选。自动选择 VPC 时，搜索会覆盖所有 VPC；手动选择的范围会保留。范围改变时，无效的子网和类型筛选会清除。
+- 每页最多显示四个资源，窄屏每页显示一个。连接目标较多时会减少每页资源数并增加画布高度。使用上一页/下一页查看其余资源。
+- 安全组连接默认隐藏，可通过复选框显示。每页保留所选资源的原始布局连接。
+- 资源计数的分母是符合当前筛选条件的资源数。已保存的节点/边总数与收集警告单独显示。布局连接不能证明实际通信路径。
 
 ### 收集依据与读取状态
 
@@ -51,20 +54,22 @@ import Screenshot from '@site/src/components/Screenshot';
 
 ### Kubernetes 视图
 
-以 4 列资源图展示 EKS 工作负载：
+以按命名空间分组的 Service 图展示所选集群 (DNS → Gateway → Service → 数据存储)：
 
-| 列 | 资源 | 说明 |
+| 节点 | 资源 | 说明 |
 |------|--------|------|
-| **Ingress** | K8s Ingress | 外部流量入口 |
-| **Services** | K8s Service | 负载均衡、ClusterIP/NodePort/LoadBalancer |
-| **Pods** | K8s Pod | 正在运行的容器 |
-| **Nodes** | EKS Node | 工作节点（EC2） |
+| **DNS** | Route 53 记录 | 精确指向网关负载均衡器主机名的别名或 CNAME 记录 |
+| **Gateway** | K8s Ingress、LoadBalancer Service | 外部流量入口 |
+| **Service** | K8s Service | 显示在其命名空间框内 |
+| **数据存储** | RDS、ElastiCache、OpenSearch、MSK | 在 Pod 环境变量、ConfigMap 或追踪中发现的托管主机 |
+
+实线是在追踪中观测到的调用，虚线是根据配置推断的数据存储连接，细线是 DNS、Ingress 和 LoadBalancer 路由。追踪调用会显示所有已注册账户的集群；无论是主机账户还是成员账户的集群，都仅在其名称在完整读取的全部集群列表及所有已注册集群中唯一时才会加入。Pod 和 Node 不在图中绘制，点击 Service 后在打开的详情面板中显示。系统命名空间默认隐藏。
 
 ### 交互功能
 
 **搜索**
 - Infrastructure：按 EC2、Subnet、VPC 的名称/ID/CIDR 搜索
-- Kubernetes：搜索 Pod、Service、Namespace
+- Kubernetes：搜索 Service、Ingress、Namespace、数据存储
 - 自动高亮匹配的资源及其关联资源
 
 **点击选择**
@@ -77,7 +82,6 @@ import Screenshot from '@site/src/components/Screenshot';
 - 拖拽：移动画布
 - 拖拽节点：调整节点位置
 - Controls：重置缩放、适配屏幕
-- MiniMap：预览整体结构
 
 ## 使用方法
 
@@ -97,17 +101,17 @@ import Screenshot from '@site/src/components/Screenshot';
 
 ### 分析 K8s 流量走向
 
-1. 选择 **Kubernetes** 视图
-2. 确认 Ingress → Service → Pod → Node 的流向
-3. 点击 Service 查看关联的 Pod
-4. 通过搜索追踪特定工作负载
+1. 选择 **K8s 地图** 标签页
+2. 确认 DNS → Gateway → Service → 数据存储 的流向
+3. 点击 Service，在详情面板中查看 Pod 和 Node
+4. 通过搜索追踪特定 Service 或命名空间
 
 ### 使用 Graph View
 
-1. 在 Infrastructure 视图中选择 **Graph View**
-2. 渲染 React Flow 图
-3. 拖拽节点调整布局
-4. 使用 MiniMap 查看整体结构
+1. 选择**资源布局图**并指定 VPC、子网和资源类型。选择**所有 VPC**可包含没有已确认 VPC 的资源。
+2. 输入搜索内容，使用**上一页资源**/**下一页资源**翻页。
+3. 按需启用**显示安全组连接**。连接目标较多时会自动调整每页资源数和画布高度。
+4. 使用缩放、平移和页面滚动检查连接，同时查看所选范围与收集状态。
 
 ## 使用技巧
 
@@ -121,20 +125,21 @@ import Screenshot from '@site/src/components/Screenshot';
 
 :::tip 调试 K8s Service
 解决 "Service 没有关联的 Pod" 问题：
-1. 在 Kubernetes 视图中点击 Service
-2. 查看关联的 Pod（若为 0 pods 则存在问题）
+1. 在 K8s 地图中点击 Service
+2. 查看详情面板中的 Pod 列表（若为空则存在问题）
 3. 确认 Pod 的 labels 与 Service 的 selector 是否匹配
-4. 若存在 Pod，则追踪至 Node 查看资源状态
+4. 若存在 Pod，则通过详情面板中的 Node 信息查看资源状态
 :::
 
 :::info 颜色图例
 | 颜色 | Infrastructure | Kubernetes |
 |------|---------------|------------|
-| Cyan | VPC, IGW | Ingress |
-| Green | Subnet | Node |
-| Purple | EC2 | Pod |
+| Cyan | VPC, IGW | - |
+| Green | Subnet | - |
+| Purple | EC2 | DNS, Gateway |
+| Blue | - | Service |
 | Pink | ELB | - |
-| Orange | RDS, NAT | Service |
+| Orange | RDS, NAT | 数据存储 |
 | Red | TGW | - |
 
 地图上方信息行中的图例仅显示当前图中存在的类型。卡片名称旁的状态点也会出现在图例中 — **ok**（绿）/ **warn**（橙）/ **bad**（红）/ **neutral**（灰）。

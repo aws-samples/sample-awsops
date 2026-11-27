@@ -99,6 +99,17 @@ describe('graph collection status', () => {
     expect(text).not.toContain('Processing limit');
     expect(text).not.toContain('previous graph retained');
   });
+  it('keeps edge-level instance observation counters out of the collection status', async () => {
+    const pool = { query: vi.fn().mockResolvedValue({ rows: [{
+      status: 'ok', attempted_at: new Date(), captured_at: new Date(),
+      details: { nodeDrops: 0, edgeDrops: 0, orphanSpans: 0, invalidSpans: 0, unresolvedMessaging: 0,
+        instanceObservationDrops: 3, retainedPrevious: false, sources: [] },
+    }] }) } as unknown as Pool;
+    const collection = JSON.parse(JSON.stringify(await readGraphState(pool, 'self')));
+    expect(collection).not.toHaveProperty('instanceObservationDrops');
+    render(<GraphCollectionStatus collection={{ ...collection, instanceObservationDrops: 3 }} />);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
   it('does not interpret ordinary numeric metadata as loss evidence', () => {
     render(<GraphCollectionStatus collection={{ status: 'ok', stale: false, itemCount: 12, spanCount: 99 }} />);
     expect(screen.queryByRole('alert')).toBeNull();

@@ -30,6 +30,7 @@ A page for tracking daily changes in AWS resource counts and estimating cost imp
 Chart series are ranked dynamically by the latest snapshot counts, not a fixed list:
 - **Core Resources**: the top 5 real resource types by count — shown by default
 - **Other Resources**: up to the next 3 types — hidden by default (click a chip to show)
+- Network interfaces (ENIs) are left out of the fleet total, so they never join Core and are always added to Other
 - Remaining types don't chart, but all of them appear in the delta table below
 ### Security Series (hidden by default, own toggle group)
 - Public S3 Buckets, Open Security Groups, Unencrypted EBS — derived counts using the Security page's criteria, excluded from the overall total

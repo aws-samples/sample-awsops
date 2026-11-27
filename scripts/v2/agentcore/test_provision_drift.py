@@ -131,7 +131,7 @@ class TestProvisionDrift(unittest.TestCase):
 
 def _gateway(description, **fields):
     return {"name": "awsops-v2-ops-gateway", "gatewayId": "gw-ops", "description": description,
-            "roleArn": "arn:aws:iam::1:role/r", "authorizerType": "NONE", "protocolType": "MCP", **fields}
+            "roleArn": "arn:aws:iam::1:role/r", "authorizerType": "AWS_IAM", "protocolType": "MCP", **fields}
 
 
 def _run_gateways(deployed_description, **fields):
@@ -163,7 +163,7 @@ class TestGatewayDescriptionDrift(unittest.TestCase):
         # never invent different values that could clobber the live gateway.
         self.assertEqual("awsops-v2-ops-gateway", kw["name"])
         self.assertEqual("MCP", kw["protocolType"])
-        self.assertEqual("NONE", kw["authorizerType"])
+        self.assertEqual("AWS_IAM", kw["authorizerType"])
         self.assertEqual({"ops": "gw-ops"}, ids)
 
     def test_matching_description_is_not_drift(self):
@@ -225,6 +225,37 @@ class TestGatewayDescriptionDrift(unittest.TestCase):
         self.assertIn("ERR", statuses)
 
 
+class TestGatewayInboundAuth(unittest.TestCase):
+    """UpdateGateway rejects authorizer-type changes ("Authorizer type cannot be updated for
+    an existing gateway"), so a NONE gateway fails the run for manual replacement."""
+
+    def test_create_uses_iam_inbound_auth(self):
+        ctrl = mock.Mock()
+        ctrl.list_gateways.return_value = {"items": []}
+        ctrl.create_gateway.return_value = {"gatewayId": "gw-new"}
+        provision.report.clear()
+        with mock.patch.object(provision.catalog, "GATEWAYS", ["ops"]):
+            ids = provision.ensure_gateways(ctrl, {"role_arn": "arn:aws:iam::1:role/r"})
+        self.assertEqual({"ops": "gw-new"}, ids)
+        self.assertEqual("AWS_IAM", ctrl.create_gateway.call_args.kwargs["authorizerType"])
+
+    def test_none_authorizer_fails_without_an_impossible_update(self):
+        ctrl, ids, statuses = _run_gateways("new text", authorizerType="NONE")
+        ctrl.update_gateway.assert_not_called()
+        # The ID stays known for Runtime routing and teardown; the run exits nonzero.
+        self.assertEqual({"ops": "gw-ops"}, ids)
+        self.assertIn(("gateway:ops", "ERR", "gateway_auth_replacement_required"),
+                      [tuple(r[:3]) for r in provision.report])
+        self.assertIn("gateway_auth_replacement_required", provision.diagnostics.CODES)
+
+    def test_none_authorizer_role_drift_still_converges_without_changing_auth(self):
+        ctrl, _, statuses = _run_gateways("new text", authorizerType="NONE", roleArn="arn:old")
+        self.assertEqual({"ERR", "UPDATED"}, statuses)
+        kw = ctrl.update_gateway.call_args.kwargs
+        self.assertEqual("NONE", kw["authorizerType"])
+        self.assertEqual("arn:aws:iam::1:role/r", kw["roleArn"])
+
+
 class TestTypedErrors(unittest.TestCase):
     def test_target_errors_expose_only_fixed_typed_codes(self):
         from botocore.exceptions import ParamValidationError
@@ -260,6 +291,63 @@ class TestReadinessFlag(unittest.TestCase):
                 provision.ensure_runtime(ctrl, {**ac, "deployment_readiness_enabled": value}, {})
             env = ctrl.create_agent_runtime.call_args.kwargs["environmentVariables"]
             self.assertEqual(env["DEPLOYMENT_READINESS_ENABLED"], "true" if value is True else "false")
+
+
+class TestHandoffFlag(unittest.TestCase):
+    def test_runtime_flag_comes_only_from_applied_boolean(self):
+        ac = {"region": "ap-northeast-2", "role_arn": "arn:aws:iam::123456789012:role/fixture",
+              "ecr_uri": "fixture.example.test/agent"}
+        for value in (None, False, "true", 1, True):
+            ctrl = mock.Mock()
+            ctrl.list_agent_runtimes.return_value = {"agentRuntimes": []}
+            ctrl.create_agent_runtime.return_value = {"agentRuntimeId": "fixture", "agentRuntimeArn": "fixture"}
+            with mock.patch.dict(os.environ, {"CHAT_SECTION_HANDOFF_ENABLED": "true"}), \
+                 mock.patch.object(provision, "_wait_runtime_ready", return_value=True):
+                provision.ensure_runtime(ctrl, {**ac, "chat_section_handoff_enabled": value}, {})
+            env = ctrl.create_agent_runtime.call_args.kwargs["environmentVariables"]
+            self.assertEqual(env["CHAT_SECTION_HANDOFF_ENABLED"], "true" if value is True else "false")
+
+
+class TestAgentModelLever(unittest.TestCase):
+    AC = {"region": "ap-northeast-2", "role_arn": "arn:aws:iam::123456789012:role/fixture",
+          "ecr_uri": "fixture.example.test/agent"}
+
+    def _run(self, model_env, shell=None):
+        ctrl = mock.Mock()
+        ctrl.list_agent_runtimes.return_value = {"agentRuntimes": []}
+        ctrl.create_agent_runtime.return_value = {"agentRuntimeId": "fixture", "agentRuntimeArn": "fixture"}
+        ac = dict(self.AC) if model_env is None else {**self.AC, "model_env": model_env}
+        environ = {"AGENT_MODEL_ID": shell} if shell is not None else {}
+        with mock.patch.dict(os.environ, environ), \
+             mock.patch.object(provision, "_wait_runtime_ready", return_value=True), \
+             redirect_stdout(io.StringIO()):
+            result = provision.ensure_runtime(ctrl, ac, {})
+        return ctrl, result
+
+    def _env(self, ctrl):
+        return ctrl.create_agent_runtime.call_args.kwargs["environmentVariables"]
+
+    def test_applied_rollback_model_is_written_on_every_run(self):
+        ctrl, _ = self._run({"AGENT_MODEL_ID": "global.anthropic.claude-sonnet-5-5"})
+        self.assertEqual(self._env(ctrl)["AGENT_MODEL_ID"], "global.anthropic.claude-sonnet-5-5")
+
+    def test_absent_model_env_keeps_the_default(self):
+        for model_env in (None, {}, {"AGENT_MODEL_ID": ""}, "not-a-map"):
+            ctrl, _ = self._run(model_env)
+            self.assertNotIn("AGENT_MODEL_ID", self._env(ctrl))
+
+    def test_deployer_shell_cannot_change_the_model(self):
+        ctrl, _ = self._run({}, shell="global.anthropic.claude-sonnet-5-5")
+        self.assertNotIn("AGENT_MODEL_ID", self._env(ctrl))
+        ctrl, _ = self._run({"AGENT_MODEL_ID": "global.openai.gpt-6-luna"}, shell="global.anthropic.claude-sonnet-5-5")
+        self.assertEqual(self._env(ctrl)["AGENT_MODEL_ID"], "global.openai.gpt-6-luna")
+
+    def test_unreviewed_model_refuses_the_runtime_update(self):
+        for bad in ("global.anthropic.claude-opus-5-5", 7):
+            ctrl, result = self._run({"AGENT_MODEL_ID": bad})
+            self.assertEqual(result, "")
+            ctrl.create_agent_runtime.assert_not_called()
+            ctrl.update_agent_runtime.assert_not_called()
 
 
 if __name__ == "__main__":

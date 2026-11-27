@@ -11,7 +11,7 @@ def lambda_handler(event, context):
     role_arn = get_role_arn(target_account_id) if target_account_id else None
     region = args.get("region", "ap-northeast-2")
     ec2 = get_client('ec2', region, role_arn)
-    vpc_id = params['vpc_id']
+    vpc_id = args['vpc_id']
 
     # 흐름 로그 조회 / Query flow logs
     resp = ec2.describe_flow_logs(Filters=[{'Name': 'resource-id', 'Values': [vpc_id]}])

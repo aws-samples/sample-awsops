@@ -56,6 +56,18 @@ describe('ECS scope from synced attachment and subnet inventory', () => {
       expect(node.meta?.cluster).toBeUndefined();
     }
   });
+  it('checks enumeration per account when scoped coverage is present, and per region otherwise', () => {
+    const memberTg = { ...tg, account_id: '111111111111' };
+    const issue = (ownershipRead: Record<string, unknown>) =>
+      target({ tg: [memberTg], ownershipRead }).meta?.ambiguity;
+    // Another account's clusters in the same region do not enumerate this account.
+    expect(issue({ eksRegions: [region], eksAccountRegions: [`123456789012|${region}`] })).toBe('eks_not_enumerated');
+    expect(issue({ eksRegions: [region], eksAccountRegions: [] })).toBe('eks_not_enumerated');
+    expect(issue({ eksRegions: [region], eksAccountRegions: [`111111111111|${region}`] })).not.toBe('eks_not_enumerated');
+    // Field absent: today's region-only rule is unchanged.
+    expect(issue({ eksRegions: [region] })).not.toBe('eks_not_enumerated');
+    expect(issue({ eksRegions: ['ap-northeast-2'] })).toBe('eks_not_enumerated');
+  });
   it('labels cached configuration without certifying exclusive ownership', () => {
     const node = target({ tg: [{ ...tg, vpc_id: 'vpc-b' }], ecsTask: [task], subnet: [subnet],
       ownershipRead: { configurationOnly: true } });
@@ -308,6 +320,88 @@ describe('buildFlowGraph — L7 routing labels (ALB rules + API GW routes)', () 
     const e = g.edges.find((x) => x.source === ALB_ID && x.target === `tg:${TG_ARN}`);
     expect(e).toBeTruthy();
     expect(e?.label).toBeUndefined();
+  });
+
+  it('exposes structured listener rules on ALB→TG edges without changing labels', () => {
+    const rules = [
+      { resource_id: 'r1', load_balancer_arn: ALB_ARN, port: 443, priority: '10',
+        conditions: [{ Field: 'path-pattern', PathPatternConfig: { Values: ['/api/*'] } }, { Field: 'host-header', Values: ['App.example.com'] }],
+        actions: [{ Type: 'forward', TargetGroupArn: TG_ARN }] },
+      { resource_id: 'r2', load_balancer_arn: ALB_ARN, port: 443, priority: '20',
+        conditions: [{ Field: 'http-header', HttpHeaderConfig: { HttpHeaderName: 'x-beta', Values: ['1'] } }],
+        actions: [{ Type: 'forward', ForwardConfig: { TargetGroups: [{ TargetGroupArn: FE_TG }] } }] },
+      { resource_id: 'r3', load_balancer_arn: ALB_ARN, port: 443, priority: 'default', is_default: true, conditions: [],
+        actions: [{ Type: 'forward', TargetGroupArn: FE_TG }] },
+      { resource_id: 'r4', load_balancer_arn: ALB_ARN, port: 443, priority: '5', conditions: [{ Field: 'path-pattern' }],
+        actions: [{ Type: 'forward', TargetGroupArn: FE_TG }] },
+    ];
+    const g = buildFlowGraph({ alb: [alb], tg: [albTg, feTg], alb_listener_rule: rules });
+    const api = g.edges.find((e) => e.target === `tg:${TG_ARN}`), fe = g.edges.find((e) => e.target === `tg:${FE_TG}`);
+    expect(api?.rules).toEqual([{ priority: 10, paths: ['/api/*'], hosts: ['App.example.com'], other: false }]);
+    expect(fe?.rules).toEqual([
+      { priority: 20, paths: [], hosts: [], other: true },
+      { priority: 'default', paths: [], hosts: [], other: false },
+      { priority: 5, paths: [], hosts: [], other: true }, // a condition without Values is undecidable
+    ]);
+    expect(api?.label).toBe('/api/*,App.example.com :443');
+    expect(fe?.label).toBe('rule :443 | default :443 | rule :443');
+    expect(api?.confidence).toBe('observed');
+  });
+
+  it('attaches no rules for an LB whose forward rules carry an unparseable priority, and none to NLB edges', () => {
+    const rules = [{ resource_id: 'r1', load_balancer_arn: ALB_ARN, port: 443,
+      conditions: [{ Field: 'path-pattern', Values: ['/api/*'] }], actions: [{ Type: 'forward', TargetGroupArn: TG_ARN }] }];
+    const g = buildFlowGraph({ alb: [alb], tg: [albTg], alb_listener_rule: rules });
+    const e = g.edges.find((x) => x.target === `tg:${TG_ARN}`);
+    expect(e?.label).toBe('/api/* :443');
+    expect(e).not.toHaveProperty('rules');
+    const mixed = buildFlowGraph({ alb: [alb], tg: [albTg, feTg], alb_listener_rule: [
+      { ...rules[0], priority: '10' }, { resource_id: 'r2', load_balancer_arn: ALB_ARN, port: 443, priority: 'later',
+        conditions: [{ Field: 'path-pattern', Values: ['/x/*'] }], actions: [{ Type: 'forward', TargetGroupArn: FE_TG }] }] });
+    for (const t of [TG_ARN, FE_TG]) expect(mixed.edges.find((x) => x.target === `tg:${t}`)).not.toHaveProperty('rules'); // whole LB dropped
+    const plain = buildFlowGraph({ alb: [alb], tg: [albTg] }).edges.find((x) => x.target === `tg:${TG_ARN}`);
+    expect(plain).not.toHaveProperty('rules');
+  });
+
+  it('adds non-forward rules of the forwarding listener as undecidable rules, without changing labels (T7a)', () => {
+    const rules = [
+      { resource_id: 'r1', load_balancer_arn: ALB_ARN, port: 443, priority: '1',
+        conditions: [{ Field: 'path-pattern', PathPatternConfig: { Values: ['/old/*'] } }],
+        actions: [{ Type: 'redirect', RedirectConfig: { Path: '/new/#{path}' } }] },
+      { resource_id: 'r2', load_balancer_arn: ALB_ARN, port: 443, priority: '10',
+        conditions: [{ Field: 'path-pattern', PathPatternConfig: { Values: ['/api/*'] } }], actions: [{ Type: 'forward', TargetGroupArn: TG_ARN }] },
+      { resource_id: 'r3', load_balancer_arn: ALB_ARN, port: 443, priority: 'default', is_default: true, conditions: [],
+        actions: [{ Type: 'fixed-response', FixedResponseConfig: { StatusCode: '404' } }] },
+      { resource_id: 'r4', load_balancer_arn: ALB_ARN, port: 80, priority: 'default', is_default: true, conditions: [],
+        actions: [{ Type: 'redirect', RedirectConfig: { Protocol: 'HTTPS' } }] }, // another listener: not part of :443 evaluation
+    ];
+    const g = buildFlowGraph({ alb: [alb], tg: [albTg, feTg], alb_listener_rule: rules });
+    const api = g.edges.find((e) => e.target === `tg:${TG_ARN}`), fe = g.edges.find((e) => e.target === `tg:${FE_TG}`);
+    expect(api?.rules).toEqual([
+      { priority: 10, paths: ['/api/*'], hosts: [], other: false },
+      { priority: 1, paths: ['/old/*'], hosts: [], other: true },
+      { priority: 'default', paths: [], hosts: [], other: true },
+    ]);
+    expect(fe).not.toHaveProperty('rules'); // no forward rule reaches it: the TG edge stays rule-less (partial data)
+    expect(api?.label).toBe('/api/* :443');
+    expect(fe?.label).toBeUndefined();
+    const answeredOnly = buildFlowGraph({ alb: [alb], tg: [albTg], alb_listener_rule: [rules[2]] }); // no forward rule at all
+    expect(answeredOnly.edges.find((e) => e.target === `tg:${TG_ARN}`)?.rules).toEqual([{ priority: 'default', paths: [], hosts: [], other: true }]);
+    const badPriority = buildFlowGraph({ alb: [alb], tg: [albTg], alb_listener_rule: [rules[1], { ...rules[0], priority: 'soon' }] });
+    expect(badPriority.edges.find((e) => e.target === `tg:${TG_ARN}`)?.rules) // order unknown, and the LB can answer itself
+      .toEqual([{ priority: 'default', paths: [], hosts: [], other: true }]);
+  });
+
+  it('attaches no rules for an LB whose forward rules span more than one listener (T7a)', () => {
+    const fwd = (id: string, port: number, tgArn: string, extra: Record<string, unknown> = {}) => ({ resource_id: id, load_balancer_arn: ALB_ARN,
+      port, priority: 'default', is_default: true, conditions: [], actions: [{ Type: 'forward', TargetGroupArn: tgArn }], ...extra });
+    const split = buildFlowGraph({ alb: [alb], tg: [albTg, feTg], alb_listener_rule: [fwd('r1', 80, TG_ARN), fwd('r2', 443, FE_TG)] });
+    for (const t of [TG_ARN, FE_TG]) expect(split.edges.find((x) => x.target === `tg:${t}`)).not.toHaveProperty('rules');
+    expect(split.edges.find((x) => x.target === `tg:${TG_ARN}`)?.label).toBe('default :80');
+    const sameListener = buildFlowGraph({ alb: [alb], tg: [albTg, feTg], alb_listener_rule: [
+      fwd('r1', 80, TG_ARN, { listener_arn: 'L1' }), fwd('r2', 443, FE_TG, { listener_arn: 'L1', priority: '5', is_default: false,
+        conditions: [{ Field: 'path-pattern', Values: ['/x/*'] }] })] });
+    expect(sameListener.edges.find((x) => x.target === `tg:${TG_ARN}`)?.rules).toHaveLength(1); // listener_arn identifies the listener
   });
 
   it('labels the API GW→Lambda edge with the route_key (path)', () => {
@@ -604,6 +698,12 @@ describe('buildFlowGraph — Route53 entry', () => {
     expect(g.edges.find((x) => x.source.startsWith('r53:') && x.target === ALB_ID)).toBeTruthy();
   });
 
+  it('links Route53 → ALB when the alias carries the ELB `dualstack.` prefix', () => {
+    const rec = { resource_id: 'ds.example.com A', name: 'ds.example.com.', type: 'A', alias_target: { DNSName: `dualstack.${alb.dns_name}.` } };
+    const g = buildFlowGraph({ route53: [rec], alb: [alb] });
+    expect(g.edges.find((x) => x.source === 'r53:ds.example.com A' && x.target === ALB_ID)).toBeTruthy();
+  });
+
   it('skips Route53 records that resolve to nothing tracked (no orphan DNS clutter)', () => {
     const rec = { resource_id: 'ext.example.com CNAME', name: 'ext.example.com.', type: 'CNAME', alias_target: { DNSName: 'somewhere-external.example.org.' } };
     const g = buildFlowGraph({ route53: [rec], cloudfront: [cf] });
@@ -783,5 +883,116 @@ describe('filterFromEntry', () => {
   it('null/absent entry returns the full graph', () => {
     expect(filterFromEntry(full, null).nodes.length).toBe(full.nodes.length);
     expect(filterFromEntry(full, 'nope:x').nodes.length).toBe(full.nodes.length);
+  });
+});
+
+describe('ENI ownership for IP targets', () => {
+  const region = 'ap-northeast-2', vpc = 'vpc-1';
+  const NLB_ARN = 'arn:aws:elasticloadbalancing:ap-northeast-2:111122223333:loadbalancer/net/edge/aaaa000011112222';
+  const INNER_ARN = 'arn:aws:elasticloadbalancing:ap-northeast-2:111122223333:loadbalancer/app/inner/50dc6c495c0c9188';
+  const nlb = { resource_id: 'edge', region, arn: NLB_ARN, dns_name: 'edge.elb.amazonaws.com', vpc_id: vpc };
+  const inner = { resource_id: 'inner', region, arn: INNER_ARN, dns_name: 'internal-inner.elb.amazonaws.com', vpc_id: vpc };
+  const tg = (ips: string[]) => ({ resource_id: 'tg-edge', region, vpc_id: vpc, target_type: 'ip', load_balancer_arns: [NLB_ARN],
+    target_health_descriptions: ips.map(Id => ({ Target: { Id, Port: 443 }, TargetHealth: { State: 'healthy' } })) });
+  const elbEni = (ip: string) => ({ resource_id: `eni-${ip}`, region, vpc_id: vpc, private_ip_address: ip,
+    private_ip_addresses: [{ PrivateIpAddress: ip, Primary: true }], description: 'ELB app/inner/50dc6c495c0c9188' });
+
+  it('groups ALB-owned IPs into one target and continues the chain into that ALB', () => {
+    const graph = buildFlowGraph({ nlb: [nlb], alb: [inner], tg: [tg(['10.0.1.5', '10.0.2.5'])],
+      eni: [elbEni('10.0.1.5'), elbEni('10.0.2.5')], ownershipRead: { configurationOnly: true } });
+    const targets = graph.nodes.filter(n => n.kind === 'target');
+    expect(targets).toHaveLength(1);
+    expect(targets[0].label).toBe('inner ×2');
+    expect(targets[0].meta).toMatchObject({ resolved: 'alb', ownership_source: 'eni', ownership_confidence: 'observed',
+      ownership_evidence: 'cached_configuration', owner: { kind: 'alb', resourceId: 'inner', arn: INNER_ARN } });
+    // Existing veto markers survive, so configuration-only targets stay non-identity evidence.
+    expect(targets[0].meta).toMatchObject({ ownership_reason: 'eks_not_enumerated' });
+    expect(targets[0].meta).not.toHaveProperty('e2e_correlation_blocked');
+    expect(graph.edges.some(e => e.source === targets[0].id && e.target === `alb:${INNER_ARN}`)).toBe(true);
+    expect(filterFromEntry(graph, `nlb:${NLB_ARN}`).nodes.some(n => n.id === `alb:${INNER_ARN}`)).toBe(true);
+  });
+
+  it('keeps an ECS task attribution ahead of the ENI and never overrides read-gap ambiguity', () => {
+    const ip = '10.0.1.5';
+    const task = { resource_id: 'arn:aws:ecs:ap-northeast-2:1:task/c/t', region, cluster_arn: 'arn:aws:ecs:ap-northeast-2:1:cluster/c',
+      task_group: 'service:api', last_status: 'RUNNING', attachments: [{ Type: 'ElasticNetworkInterface', Details: [
+        { Name: 'subnetId', Value: 'subnet-a' }, { Name: 'privateIPv4Address', Value: ip }] }] };
+    const base = { nlb: [nlb], alb: [inner], tg: [tg([ip])], eni: [elbEni(ip)], subnet: [{ resource_id: 'subnet-a', region, vpc_id: vpc }] };
+    const ecs = buildFlowGraph({ ...base, ecsTask: [task] }).nodes.find(n => n.kind === 'target')!;
+    expect(ecs.meta?.resolved).toBe('ecs');
+    const gap = buildFlowGraph({ ...base, ownershipRead: { ecsTask: 'failed' } }).nodes.find(n => n.kind === 'target')!;
+    expect(gap.meta).toMatchObject({ ambiguity: 'ecs_task_inventory_incomplete' });
+    expect(gap.meta).not.toHaveProperty('owner');
+  });
+
+  it('blocks E2E identity use of inferred owners and refuses owners guarded by incomplete reads', () => {
+    const ip = '10.0.3.4';
+    const rdsTg = { ...tg([ip]), resource_id: 'tg-db' };
+    const rdsEni = { resource_id: 'eni-r', region, vpc_id: vpc, private_ip_address: ip, requester_id: 'amazon-rds',
+      description: 'RDSNetworkInterface', availability_zone: 'ap-northeast-2a', subnet_id: 'subnet-a',
+      private_ip_addresses: [{ PrivateIpAddress: ip, Primary: true }] };
+    const db = { resource_id: 'orders', region, vpc_id: vpc, availability_zone: 'ap-northeast-2a' };
+    const inferred = buildFlowGraph({ nlb: [nlb], tg: [rdsTg], eni: [rdsEni], rds: [db] }).nodes.find(n => n.kind === 'target')!;
+    expect(inferred.meta).toMatchObject({ resolved: 'rds', ownership_confidence: 'inferred', e2e_correlation_blocked: true });
+    // A withheld or capped RDS Proxy read removes the proxy-subnet guard, so no RDS claim is made.
+    const guarded = buildFlowGraph({ nlb: [nlb], tg: [rdsTg], eni: [rdsEni], rds: [db],
+      ownershipRead: { ownerIncomplete: ['rds_proxy'] } }).nodes.find(n => n.kind === 'target')!;
+    expect(guarded.meta).toMatchObject({ eni_owner_reason: 'owner_inventory_incomplete' });
+    expect(guarded.meta).not.toHaveProperty('owner');
+  });
+
+  it('discloses why an ENI could not name a synced owner', () => {
+    const graph = buildFlowGraph({ nlb: [nlb], tg: [tg(['10.0.1.5'])], eni: [elbEni('10.0.1.5')] });
+    expect(graph.nodes.find(n => n.kind === 'target')!.meta).toMatchObject({ eni_owner_reason: 'owner_not_synced' });
+  });
+});
+
+describe('buildFlowGraph — CloudFront origin id on origin edges', () => {
+  it('keeps each origin Id on its own CloudFront→origin edge', () => {
+    const cf = { resource_id: 'D1', region: 'us-east-1', origins: [
+      { Id: 'api-dynamic', DomainName: alb.dns_name },
+      { Id: 's3-static', DomainName: 'my-site-123456789012.s3.ap-northeast-2.amazonaws.com' },
+    ] };
+    const g = buildFlowGraph({ cloudfront: [cf], alb: [alb] });
+    const toLb = g.edges.find((e) => e.source === 'cf:D1' && e.target === ALB_ID);
+    const toS3 = g.edges.find((e) => e.source === 'cf:D1' && e.target.startsWith('origin:'));
+    expect(toLb?.originIds).toEqual(['api-dynamic']);
+    expect(toS3?.originIds).toEqual(['s3-static']);
+  });
+
+  it('merges ids of two origins that resolve to the same target into one edge', () => {
+    const cf = { resource_id: 'D1', region: 'us-east-1', origins: [
+      { Id: 'a', DomainName: alb.dns_name }, { Id: 'b', DomainName: alb.dns_name },
+    ] };
+    const g = buildFlowGraph({ cloudfront: [cf], alb: [alb] });
+    const edges = g.edges.filter((e) => e.source === 'cf:D1' && e.target === ALB_ID);
+    expect(edges).toHaveLength(1);
+    expect(edges[0].originIds).toEqual(['a', 'b']);
+    expect(edges[0].originConfidence).toEqual({ a: 'observed', b: 'observed' });
+  });
+
+  it('keeps per-origin confidence when a direct and a Route53-chain origin merge onto one LB edge', () => {
+    const pub = { resource_id: 'web-alb', region: 'ap-northeast-2', scheme: 'internet-facing',
+      arn: 'arn:aws:elasticloadbalancing:ap-northeast-2:1:loadbalancer/app/web-alb/1', dns_name: 'web-alb-1.ap-northeast-2.elb.amazonaws.com' };
+    const r53 = [{ resource_id: 'Z api.example.com. A', name: 'api.example.com.', type: 'A', private_zone: false,
+      alias_target: { DNSName: `dualstack.${pub.dns_name}.` } }];
+    const direct = { Id: 'direct', DomainName: pub.dns_name }, chain = { Id: 'chain', DomainName: 'api.example.com' };
+    for (const origins of [[direct, chain], [chain, direct]]) {
+      const g = buildFlowGraph({ cloudfront: [{ resource_id: 'D1', region: 'us-east-1', origins }], alb: [pub], route53: r53 });
+      const edges = g.edges.filter((e) => e.source === 'cf:D1');
+      expect(edges).toHaveLength(1);
+      expect(edges[0].originConfidence).toEqual({ direct: 'observed', chain: 'inferred' });
+      // The L4 edge keeps its first-seen confidence; only the per-origin map is new.
+      expect(edges[0].confidence).toBe(origins[0] === direct ? 'observed' : 'inferred');
+    }
+  });
+
+  it('does not add originIds to non-CloudFront edges', () => {
+    const lbTg = { resource_id: TG_ARN, target_group_name: 'web-tg', target_type: 'ip', load_balancer_arns: [ALB_ARN], target_health_descriptions: [] };
+    const g = buildFlowGraph({ alb: [alb], tg: [lbTg] });
+    const e = g.edges.find((x) => x.source === ALB_ID);
+    expect(e).toBeTruthy();
+    expect(e).not.toHaveProperty('originIds');
+    expect(e).not.toHaveProperty('originConfidence');
   });
 });

@@ -110,6 +110,40 @@ def test_projection_keeps_resource_identity_across_scopes_and_bounds_links():
         assert len(group["scopeSpans"][0]["spans"][0]["links"]) == 64
 
 
+def test_projection_retains_only_bounded_instance_claims_without_attribute_extras():
+    raw = copy.deepcopy(CASE["raw"])
+    attributes = raw["batches"][0]["resource"]["attributes"]
+    expected = {
+        "cloud.resource_id": "arn:aws:ec2:ap-northeast-2:123456789012:instance/i-0123456789abcdef0",
+        "host.id": "i-0123456789abcdef0",
+        "service.instance.id": "i-0123456789abcdef0",
+    }
+    attributes.extend({"key": key, "value": {"stringValue": value, "private": "PRIVATE"},
+                       "private": "PRIVATE"} for key, value in expected.items())
+    raw["padding"] = "PRIVATE" * tempo.MAX_TOTAL_BYTES
+    original = copy.deepcopy(raw)
+    body = read_trace(raw)
+    projected = body["batches"][0]["resource"]["attributes"]
+    claims = {entry["key"]: entry["value"]["stringValue"] for entry in projected if entry["key"] in expected}
+    assert claims == expected
+    assert "PRIVATE" not in json.dumps(body)
+    assert raw == original
+
+
+@pytest.mark.parametrize("value", [
+    {"stringValue": "x" * 513}, {"stringValue": "i-0123456789abcdef0\nPRIVATE"},
+    {"stringValue": ""}, {"arrayValue": {"values": [{"stringValue": "PRIVATE"}]}},
+    {"stringValue": None},
+])
+def test_invalid_instance_claim_does_not_expand_bounded_trace_projection(value):
+    raw = copy.deepcopy(CASE["raw"])
+    raw["batches"][0]["resource"]["attributes"].append({"key": "host.id", "value": value})
+    raw["padding"] = "x" * tempo.MAX_TOTAL_BYTES
+    body = read_trace(raw)
+    assert body["batches"][0]["resource"]["attributes"] == CASE["expected"]["batches"][0]["resource"]["attributes"]
+    assert "PRIVATE" not in json.dumps(body)
+
+
 def test_projection_does_not_hide_malformed_resource_metadata():
     raw = copy.deepcopy(CASE["raw"])
     raw["batches"][0]["resource"] = None

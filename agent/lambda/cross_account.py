@@ -38,6 +38,11 @@ def _host_account_id():
         return None
 
 
+def host_account_id():
+    """Public accessor for the account this Lambda runs in (None when it cannot be resolved)."""
+    return _host_account_id()
+
+
 def get_role_arn(account_id):
     """Cross-account read-only role ARN for a *different* account.
 
@@ -153,3 +158,19 @@ def resolve_tool_name(params, context, default=''):
         custom = getattr(client_context, 'custom', None) or {}
         tool_name = custom.get('bedrockAgentCoreToolName', '')
     return tool_name.rsplit('___', 1)[-1] if tool_name else default
+
+
+def cap_list(items, limit, more_pages=False):
+    """Bound a tool's list result AND say so, so the model never mistakes the first N for all of them.
+
+    Returns ``(kept, meta)``; merge ``meta`` into the response body. ``total`` counts what the API
+    returned; when the API itself signalled more pages (NextToken/Marker), ``more_pages`` is set and
+    ``total`` is only a lower bound.
+    """
+    items = list(items or [])
+    kept = items[:limit]
+    meta = {"returned": len(kept), "total": len(items),
+            "truncated": len(items) > limit or bool(more_pages)}
+    if more_pages:
+        meta["more_pages"] = True
+    return kept, meta

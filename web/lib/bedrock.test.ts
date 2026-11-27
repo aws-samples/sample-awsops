@@ -1,5 +1,52 @@
 import { describe, it, expect } from 'vitest';
-import { getModelLabel, getModelPricing, computeCost, RANGE_CONFIGS, MODEL_PRICING } from './bedrock';
+import { getModelLabel, getModelPricing, computeCost, RANGE_CONFIGS, MODEL_PRICING, thinkingOffFields } from './bedrock';
+
+describe('thinkingOffFields', () => {
+  it('uses `disabled` for Haiku 5.x and `between_tools` for Sonnet 5.5; Opus 5.5 stays adaptive', () => {
+    expect(thinkingOffFields('global.anthropic.claude-haiku-5-5')).toEqual({
+      additionalModelRequestFields: { thinking: { type: 'disabled' } },
+    });
+    expect(thinkingOffFields('global.anthropic.claude-sonnet-5-5')).toEqual({
+      additionalModelRequestFields: { thinking: { type: 'between_tools' } },
+    });
+    expect(thinkingOffFields('global.anthropic.claude-sonnet-5')).toEqual({});
+    expect(thinkingOffFields('global.anthropic.claude-opus-5-5')).toEqual({});
+    expect(thinkingOffFields('global.anthropic.claude-haiku-4-5-20251001-v1:0')).toEqual({});
+  });
+});
+
+describe('Claude 5.5 pricing entries', () => {
+  it('resolves global. profiles to labeled 5.5 entries', () => {
+    expect(getModelLabel('global.anthropic.claude-sonnet-5-5')).toBe('Claude Sonnet 5.5');
+    expect(getModelLabel('global.anthropic.claude-opus-5-5')).toBe('Claude Opus 5.5');
+    expect(getModelLabel('global.anthropic.claude-haiku-5-5')).toBe('Claude Haiku 5.5');
+    expect(getModelPricing('global.anthropic.claude-haiku-5-5').input).toBe(0.10);
+  });
+});
+
+describe('Anthropic API bare model ids', () => {
+  it('price and label like the Bedrock family (model_provider = anthropic_api)', () => {
+    expect(getModelLabel('claude-sonnet-5-5')).toBe('Claude Sonnet 5.5');
+    expect(getModelLabel('claude-haiku-5-5')).toBe('Claude Haiku 5.5');
+    expect(getModelPricing('claude-sonnet-5-5')).toEqual(getModelPricing('global.anthropic.claude-sonnet-5-5'));
+    expect(getModelPricing('claude-opus-5-5').input).toBe(4);
+  });
+});
+
+describe('GPT pricing entries', () => {
+  it.each(['openai.gpt-6-luna-20261104-v1:0', 'global.openai.gpt-6-luna-v1:0',
+    'global.openai.gpt-6.1-terra-20261104-v2:0'])('normalizes a known GPT version: %s', id => {
+    const canonical = id.includes('terra') ? 'openai.gpt-6.1-terra' : 'openai.gpt-6-luna';
+    expect(getModelPricing(id)).toEqual(getModelPricing(canonical));
+    expect(getModelLabel(id)).toBe(getModelLabel(canonical));
+  });
+  it('resolves global. GPT profiles to labeled entries', () => {
+    expect(getModelLabel('global.openai.gpt-6-luna')).toBe('GPT-6 Luna');
+    expect(getModelLabel('global.openai.gpt-6.1-terra')).toBe('GPT-6.1 Terra');
+    expect(getModelPricing('global.openai.gpt-6-luna')).toEqual({ input: 0.10, output: 0.50, cacheRead: 0.01, cacheWrite: 0.125 });
+    expect(getModelPricing('global.openai.gpt-6.1-terra')).toEqual({ input: 1, output: 5, cacheRead: 0.05, cacheWrite: 1.25 });
+  });
+});
 
 describe('getModelPricing', () => {
   it('exact-matches a known id', () => {

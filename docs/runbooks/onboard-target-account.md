@@ -101,6 +101,41 @@ Agent Lambda readers currently use a single `AWSOPS_EXTERNAL_ID` setting instead
 registry's per-account value. An automatically generated per-account ID is not automatically
 propagated there. Operators must coordinate the shared reader value and its trusted
 principal before expecting AgentCore cross-account reads; the wizard does not configure them.
+See [AgentCore cross-account reads](#agentcore-cross-account-reads).
+
+### AgentCore cross-account reads
+
+AgentCore MCP tools (ENI, security group, route and other live reads) run as the host
+`<project>-agent-lambda` role, not the web task role, so a target trust that names only the web
+and collector principals rejects them with `AccessDenied` at AssumeRole. Two settings must match:
+
+1. **Host:** set the Terraform input `agent_external_id` to the ExternalId that the target trust
+   requires. Terraform passes it to every agent Lambda as `AWSOPS_EXTERNAL_ID`. It is one value
+   for all targets, so it works only for targets whose trust uses that same ExternalId. The
+   variable is marked sensitive to keep the value out of public plan logs; once it is set, plans
+   render each agent Lambda's whole environment map as `(sensitive value)`, so review other agent
+   environment changes in a separate plan. Empty (default) sends
+   no ExternalId and changes nothing.
+2. **Target:** trust the exact role ARN from the host's
+   `terraform -chdir=terraform/foundation output -raw agent_lambda_role_arn` (do not hand-build
+   it) with the same ExternalId condition. The create-only template has an optional
+   `AgentLambdaRoleArn` parameter that adds a separate statement under the shared `ExternalId`
+   condition. The browser script never fills it. For an existing `awsops-readonly-role` stack,
+   the stored template has no such parameter, so the target administrator creates a change set
+   with the updated template body
+   (`--template-body file://infra/cfn/awsops-target-account-role.yaml`), passes every existing
+   parameter with `UsePreviousValue=true` (which preserves the ExternalId), sets only
+   `AgentLambdaRoleArn`, and confirms the change set modifies only the role's trust policy
+   before executing it.
+
+`rds-mcp` and `inventory-read` run as the separate reader role `<project>-agent-lambda-reader`.
+`inventory-read` reads only the host's Aurora, but `rds-mcp`'s describe/list tools assume the
+target role as that reader role (its `execute_sql` refuses foreign accounts). The template's
+`AgentLambdaRoleArn` statement does not trust the reader role, so those `rds-mcp` reads keep
+failing with `AccessDenied` in target accounts until the reader role is trusted separately.
+Expect chat answers that combine network and RDS tools to be complete for the network part
+only. Apply the host change first: until the Lambda sends the ExternalId, the new target
+statement still rejects it.
 
 Host-only deployments display the restriction before registration and disable the register
 button. A separate connection check performs no registry writes. The onboarding form offers
@@ -232,10 +267,12 @@ an allowlist edit revokes every previously configured read path.
   (Terraform output `worker_task_role_arn`): only needed if this target account will be read by a
   WORKER-driven member-account job against it — the sg-rules Athena scan (`sg_rule_scan.py`) or a
   Network Path Check's live-identity resolution (`network_path.py`'s `resolve_live_identity()`/
-  `fetch_live_topology()`, see `docs/runbooks/network-path-eks-access.md`). Neither worker's task
-  role is trusted by this account until `WorkerTaskRoleArn` below is set — omitting it leaves those
-  two features correctly failing closed (AccessDenied) against this account, exactly as if it were
-  never onboarded for worker-driven reads at all.
+  `fetch_live_topology()`, see `docs/runbooks/network-path-eks-access.md`), or the default-off
+  diagnosis evidence loop's member metrics and Compute Optimizer reads. The worker task
+  role is not trusted by this account until `WorkerTaskRoleArn` below is set; omitting it
+  leaves these worker reads failing closed. Diagnosis additionally requires the exact
+  registered `AWSopsReadOnlyRole` ARN in the host's applied `diagnosis_member_role_arns`
+  allowlist; account registration alone does not authorize that worker read.
 - **3rd-party only**: a chosen **ExternalId** string (8–1224 ASCII letters, digits or `_+=,.@:/-` for the browser path), same value in the CFN and `/accounts`.
   1st-party (same-org) accounts can omit it.
 
@@ -266,7 +303,11 @@ an allowlist edit revokes every previously configured read path.
    ```
    Include `InventoryTaskRoleArn` for inventory collection. Omit it only when collector
    trust is intentionally not being configured; that omission is not collection readiness.
-   Omit `WorkerTaskRoleArn` unless a worker job needs the account. Omit `ExternalId` for
+   Omit `WorkerTaskRoleArn` unless a worker job needs the account.
+   Add `'AgentLambdaRoleArn=<host-agent-lambda-role-arn>'` (Terraform output
+   `agent_lambda_role_arn`) only when AgentCore chat tools must read this account and the host
+   `agent_external_id` equals this stack's ExternalId; see
+   [AgentCore cross-account reads](#agentcore-cross-account-reads). Omit `ExternalId` for
    explicitly selected first-party **new-stack** onboarding. Keep line continuations only
    between actual arguments, and keep actual ExternalId values out of shared logs and AI prompts.
    The stack outputs `RoleArn` (`arn:aws:iam::<target>:role/AWSopsReadOnlyRole`). Re-running
@@ -293,12 +334,17 @@ Account registration enables scoped AWS discovery; it does not grant Kubernetes 
 Select the member account and region in **EKS**, then follow that cluster's registration
 guide. The default Kubernetes token uses the registered member read role, normally
 `AWSopsReadOnlyRole`, so an Access Entry for only the host web task role is insufficient.
-The cluster owner grants the member role an Entry with `AmazonEKSViewPolicy` and the
-minimal `awsops:eks-readonly` node-read binding. The generated guide includes the complete
-manifest from `web/lib/eks-member-rbac.ts`; do not grant the shared role AdminView/Secrets
-access. OpenCost proxy and K8sGPT Result reads require the separate narrow bindings in the
-[EKS reference](../reference/07-eks.md). Preserve existing Entry groups when adding this
-group and review/remove any existing broader policy association separately.
+The cluster owner grants the member role an Entry with `AmazonEKSViewPolicy` only: the
+generated guide is two commands (`create-access-entry --type STANDARD` and
+`associate-access-policy` at cluster scope), with no kubeconfig, kubectl or RBAC step.
+View excludes Kubernetes Secrets; do not grant the shared role AdminView/Secret access,
+and disassociate an existing AdminView association (policies are additive). View has no
+`nodes` read, so the node list comes from read-only EC2/node-group APIs with the same
+role (`ReadOnlyAccess` already covers them). After the entry exists, the next
+administrator visit to **EKS** shows the cluster as **Access Entry 확인됨**, and one click on
+**[조회 등록]** registers it (AWSops never registers it on its own). Entries created from the earlier guide (`awsops:eks-readonly`
+group plus node-read RBAC) keep working. OpenCost proxy and K8sGPT Result reads require
+the separate narrow bindings in the [EKS reference](../reference/07-eks.md).
 
 AWSops verifies the selected cluster directly and saves only app registration/auth state;
 it does not run the owner-side grant commands. Permission errors, timeout and unreachable
@@ -308,13 +354,14 @@ Terraform-managed entry remains separate.
 ## Notes
 - **ExternalId is not a secret** — it is a confused-deputy guard, stored in plaintext so AWSops can pass
   it to `sts:AssumeRole`. Treat it like a coordination value, not a credential.
-- The existing web/worker trust statement and the separate collector statement share one
-  ExternalId condition. For a first-party new stack, omission removes that condition from
-  **both** statements while keeping exact principal ARNs. For an existing stack, omission is
-  not a rotation procedure: preserve the current value unless an operator-reviewed change
-  deliberately changes it. Coordinate any rotation/removal across both target trust statements,
+- The web/worker trust statement, the separate collector statement and the optional agent
+  Lambda statement share one ExternalId condition. For a first-party new stack, omission removes
+  that condition from **every** statement while keeping exact principal ARNs. For an existing
+  stack, omission is not a rotation procedure: preserve the current value unless an
+  operator-reviewed change deliberately changes it. Coordinate any rotation/removal across all
+  target trust statements,
   the stored account value used by web/Steampipe, worker settings where used, and the separately
-  configured Agent Lambda `AWSOPS_EXTERNAL_ID`. The browser create-only script does not
+  configured Agent Lambda `AWSOPS_EXTERNAL_ID` (Terraform `agent_external_id`). The browser create-only script does not
   rotate or remove an existing condition, and checking first-party does not update the target role.
 - Host account: no role needed (AWSops uses its own task-role credentials for the host).
 - To remove an account, use the **제거** button on `/accounts` (the host row is protected).

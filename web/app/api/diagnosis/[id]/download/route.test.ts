@@ -58,6 +58,7 @@ describe('GET /api/diagnosis/[id]/download', () => {
     expect(res.headers.get('content-disposition')).toContain('awsops-diagnosis-7.docx');
     // requested the sibling key, not the .md
     expect((mockSend.mock.calls[0][0] as any).Key).toBe('diagnosis/7.docx');
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]));
   });
 
   it('serves PDF', async () => {

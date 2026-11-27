@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { FlowNode } from '@/lib/flow-topology';
 
 vi.mock('@/components/shell/LanguageProvider', () => ({
@@ -14,6 +14,7 @@ vi.mock('next/dynamic', () => ({
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn(), replace: vi.fn() }), useSearchParams: () => new URLSearchParams(window.location.search) }));
 import TopologyPage from './page';
 
+beforeEach(() => { window.history.replaceState({}, '', '/topology?view=flow'); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 it('passes independently collected subnet rows to the real ECS target resolver', async () => {
   vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => window.setTimeout(() => cb(0), 0));

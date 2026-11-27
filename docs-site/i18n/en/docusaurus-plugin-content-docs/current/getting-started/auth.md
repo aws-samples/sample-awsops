@@ -48,7 +48,7 @@ AWSops handles authentication using Amazon Cognito + Lambda@Edge + CloudFront.
 | Item | Setting |
 |------|---------|
 | **Region** | us-east-1 (required for Lambda@Edge) |
-| **Runtime** | Python 3.12 (deployed handler; CDK stub is Node.js 20) |
+| **Runtime** | Python 3.14 (deployed handler; CDK stub is Node.js 20) |
 | **Trigger** | CloudFront viewer-request |
 | **Functions** | JWT validation, OAuth2 callback handling, cookie management |
 

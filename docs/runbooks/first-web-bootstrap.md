@@ -29,7 +29,7 @@ Run commands from the root of a clean checkout of the reviewed development
 commit, on the operator's private deployment host. Coordinate the sequence so no
 other deployment changes its source, configuration, state or image tag.
 
-- Use Terraform **1.15.7**, Node.js **20 or newer**, npm, Make, AWS CLI, GitHub CLI,
+- Use Terraform **1.17.1**, Node.js **26**, npm, Make, AWS CLI, GitHub CLI,
   curl and Docker with a working Buildx builder supporting `linux/arm64`.
   This procedure explicitly uses `DOCKER=docker`; the local deploy script otherwise
   defaults to `sudo docker`. Use the same daemon/builder for both image builds.

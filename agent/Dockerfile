@@ -1,31 +1,19 @@
-FROM python:3.11-slim
+FROM python:3.14-slim-bookworm
 
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends libpq-dev gcc && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir \
-    "strands-agents==1.41.0" \
-    strands-agents-tools \
-    boto3 \
-    psycopg2-binary \
-    "bedrock-agentcore<=0.1.5" \
-    "anthropic[bedrock]==0.111.0" \
-    mcp \
-    # ADR-017 (amended): official ClickHouse MCP server, stdio-embedded by agent.py when the
-    # CLICKHOUSE_OFFICIAL_MCP runtime env is true (default off). EXACT pin (not "pinned by image
-    # build") — an unpinned rebuild can silently change the `mcp_clickhouse.main` module path, the
-    # CLICKHOUSE_* env contract, or the exposed tool surface with no review signal.
-    # Keep in sync with agent/requirements.txt.
-    "mcp-clickhouse==0.4.1" \
-    httpx \
-    httpx-sse \
-    aws-requests-auth
+COPY requirements-runtime.txt .
+RUN pip install --no-cache-dir -r requirements-runtime.txt
 
 COPY streamable_http_sigv4.py .
+COPY pinned_http.py .
 COPY account_utils.py .
 COPY agent.py .
 COPY readiness.py .
+COPY model_runtime.py .
+COPY section_handoff.py .
 # Dark-path agent loop (flag-gated, default OFF) — see ADR-008 (amended) / BASELINE §2.
 COPY anthropic_loop.py .
 # ADR-006 RCA (EoG) — read-only orchestrator reached via payload mode=="rca".

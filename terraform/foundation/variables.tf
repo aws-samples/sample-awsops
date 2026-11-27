@@ -148,13 +148,13 @@ variable "demo_password" {
 
 variable "k8sgpt_enabled" {
   type        = bool
-  description = "ADR-035 K8sGPT in-cluster diagnosis (AWSops-side substrate) gate. false (default) = 0 gated infra ($0), the /api/eks/[cluster]/k8sgpt route is dark (503), NO cluster read, NO narration. The always-present k8s_findings/k8s_scan_runs tables (migration v7) are harmless when off. The K8sGPT OPERATOR install is OUT-OF-BAND (docs/runbooks/k8sgpt-operator-install.md) — AWSops NEVER writes to the EKS cluster. REQUIRES onboard_eks_clusters non-empty + agentcore_enabled (narration rides the Container agent)."
+  description = "ADR-006[legacy 035] K8sGPT in-cluster diagnosis (AWSops-side substrate) gate. false (default) = 0 gated infra ($0), the /api/eks/[cluster]/k8sgpt route is dark (503), NO cluster read, NO narration. The always-present k8s_findings/k8s_scan_runs tables (migration v7) are harmless when off. The K8sGPT OPERATOR install is OUT-OF-BAND (docs/runbooks/k8sgpt-operator-install.md) — AWSops NEVER writes to the EKS cluster. REQUIRES onboard_eks_clusters non-empty + agentcore_enabled (narration rides the Container agent)."
   default     = false
 }
 
 variable "k8sgpt_monthly_bedrock_budget_usd" {
   type        = number
-  description = "ADR-035 Rule 11 cost cap: monthly Bedrock spend budget (USD) for the K8sGPT narration. Alarm only (no enforcement). Tunable."
+  description = "ADR-006[legacy 035] Rule 11 cost cap: monthly Bedrock spend budget (USD) for the K8sGPT narration. Alarm only (no enforcement). Tunable."
   default     = 50
 }
 
@@ -178,9 +178,15 @@ variable "workers_enabled" {
   default     = false
 }
 
+variable "topology_entities_enabled" {
+  type        = bool
+  default     = false
+  description = "Expose the published host service topology to authenticated web and inventory-read consumers."
+}
+
 variable "graph_rebuild_interval_mins" {
   type        = number
-  description = "Minutes between web-instrumentation topology graph-rebuilds (flow/infra/trace layers, ADR-043 + 2026-06-25 trace-topology design). 0 (default) = the interval never starts; the manual `scripts/v2/graph-rebuild.mjs` path is unaffected either way. No new AWS resource — runs in the existing web task using perms it already holds. Recommended: 15 (matches steampipe.tf's inventory-sync cadence)."
+  description = "Minutes between web-instrumentation topology graph-rebuilds (flow/infra/trace layers, ADR-010[legacy 043] + 2026-06-25 trace-topology design). 0 (default) = the interval never starts; the manual `scripts/v2/graph-rebuild.mjs` path is unaffected either way. No new AWS resource — runs in the existing web task using perms it already holds. Recommended: 15 (matches steampipe.tf's inventory-sync cadence)."
   default     = 0
   validation {
     # Must be 0 (off) or a whole minute ≥1 — a fractional/zero-ish positive value (e.g. 0.01) would
@@ -206,11 +212,21 @@ variable "ai_cost_tracking_enabled" {
 
 variable "datasource_diagnosis_enabled" {
   type        = bool
-  description = "AI-diagnosis external-observability collector gate (ADR-039/041 governed egress). When true (requires workers_enabled), grants the worker role lambda:InvokeFunction on the 5 connector Lambdas and sets DIAG_DATASOURCES_ENABLED/HOST_ACCOUNT_ID/PROJECT on the worker so collect_datasources can fan out. false (default) = 0 resources/IAM, $0, collector stays disabled (no AccessDenied degrade)."
+  description = "AI-diagnosis external-observability collector gate (ADR-007[legacy 039] governed egress). When true (requires workers_enabled), grants the worker role lambda:InvokeFunction on the 5 connector Lambdas and sets DIAG_DATASOURCES_ENABLED/HOST_ACCOUNT_ID/PROJECT on the worker so collect_datasources can fan out. false (default) = 0 resources/IAM, $0, collector stays disabled (no AccessDenied degrade)."
   default     = false
   validation {
     condition     = !var.datasource_diagnosis_enabled || (var.workers_enabled && var.agentcore_enabled && var.integrations_enabled)
     error_message = "datasource_diagnosis_enabled=true requires workers_enabled, agentcore_enabled, and integrations_enabled."
+  }
+}
+
+variable "connector_target_sync_enabled" {
+  type        = bool
+  description = "Register a datasource kind's connector (ClickHouse/Prometheus on the external-obs gateway, Loki/Tempo/Mimir on the monitoring gateway) when an administrator adds that datasource (connector_target_sync worker job). ADR-023 (ADR-005 owner-override exception, owner 2026-11-05), the second after ADR-015; enable on at most one awsops stack per account: create/update of this stack's own gateway targets only — the job never deletes, only writes the awsops-v2-external-obs/monitoring gateways, only points targets at this stack's own connector Lambdas, and never repoints a target another stack's Lambda owns. Requires workers_enabled, agentcore_enabled and integrations_enabled. false (default) = 0 resources/IAM, no web/worker env, $0."
+  default     = false
+  validation {
+    condition     = !var.connector_target_sync_enabled || (var.workers_enabled && var.agentcore_enabled && var.integrations_enabled)
+    error_message = "connector_target_sync_enabled=true requires workers_enabled, agentcore_enabled, and integrations_enabled."
   }
 }
 
@@ -242,8 +258,82 @@ variable "diagnosis_schedule_enabled" {
 
 variable "diagnosis_notify_enabled" {
   type        = bool
-  description = "Email the scheduled-diagnosis mailing list (v1 report-scheduler parity): provisions one SNS topic; the worker publishes a summary+link to it when a SCHEDULED report finishes, and the web BFF manages its email subscriptions (/api/diagnosis/subscribers, admin-only). Governed external-comms write (ADR-040/041), IAM-scoped to the single topic ARN — NOT AWS-resource mutation. Worker publish needs workers_enabled. false (default) = 0 resources/IAM, $0, no topic, app treats it as disabled."
+  description = "Email the scheduled-diagnosis mailing list (v1 report-scheduler parity): provisions one SNS topic; the worker publishes a summary+link to it when a SCHEDULED report finishes, and the web BFF manages its email subscriptions (/api/diagnosis/subscribers, admin-only). Governed external-comms write (ADR-007[legacy 040]), IAM-scoped to the single topic ARN — NOT AWS-resource mutation. Worker publish needs workers_enabled. false (default) = 0 resources/IAM, $0, no topic, app treats it as disabled."
   default     = false
+}
+
+variable "diagnosis_evidence_loop_enabled" {
+  type        = bool
+  default     = false
+  description = "Bounded read-only six-pillar diagnosis evidence loop. Adds worker-only configuration with an applied host-account binding and, on the Fargate task role only (independently of FinOps), exactly: compute-optimizer:GetEC2InstanceRecommendations and compute-optimizer:GetRDSDatabaseRecommendations on * and cloudwatch:ListMetrics on *, conditioned on the runtime read regions (all known regions); plus, only when diagnosis_member_role_arns is non-empty, sts:AssumeRole on exactly those ARNs (the registered ExternalId is sent; ADR-011 first-party rows rely on the member trust pin). No mutation, autonomous remediation, new connector or scheduled job. Disabled leaves worker environment and IAM unchanged."
+  validation {
+    condition     = !var.diagnosis_evidence_loop_enabled || var.workers_enabled
+    error_message = "diagnosis_evidence_loop_enabled requires workers_enabled."
+  }
+}
+
+variable "diagnosis_managed_discovery_enabled" {
+  type        = bool
+  default     = false
+  description = "Bounded read-only Application Signals discovery for the Fargate diagnosis worker, with a narrow region-conditioned worker IAM grant. No instrumentation, service, space or space access-grant creation. The private Omni adapter remains inactive pending a verified read-only, per-space credential IAM boundary."
+  validation {
+    condition     = !var.diagnosis_managed_discovery_enabled || var.diagnosis_evidence_loop_enabled
+    error_message = "diagnosis_managed_discovery_enabled requires diagnosis_evidence_loop_enabled."
+  }
+}
+
+variable "diagnosis_omni_spaces" {
+  type        = map(string)
+  default     = {}
+  description = "Reserved compatibility input; must remain empty. Omni credential vending and graph collection are inactive until a separately reviewed release proves a read-only, per-space IAM boundary."
+  validation {
+    condition     = length(var.diagnosis_omni_spaces) == 0
+    error_message = "diagnosis_omni_spaces must be empty: Omni is inactive pending verified read-only, per-space credential IAM scope."
+  }
+}
+
+variable "diagnosis_network_evidence_enabled" {
+  type        = bool
+  default     = false
+  description = "Bounded read-only DNS/NFM observation queries for diagnosis; requires the evidence loop. Grants the Fargate task role, conditioned on the runtime read regions (all known regions): route53resolver:ListResolverQueryLogConfigs/ListResolverQueryLogConfigAssociations, networkflowmonitor:ListMonitors and rds:DescribeDBProxies/DescribeDBProxyTargets/DescribeDBClusters on *; networkflowmonitor Start/GetQueryStatus/GetQueryResults/StopQueryMonitorTopContributors on host monitors; and, only when diagnosis_dns_log_group_arns is non-empty, logs:StartQuery on exactly those groups plus logs:GetQueryResults/StopQuery on *. Does not create logging, monitors or instrumentation."
+  validation {
+    condition     = !var.diagnosis_network_evidence_enabled || var.diagnosis_evidence_loop_enabled
+    error_message = "diagnosis_network_evidence_enabled requires diagnosis_evidence_loop_enabled."
+  }
+}
+
+variable "diagnosis_dns_log_group_arns" {
+  type        = list(string)
+  default     = []
+  description = "Reviewed Resolver CloudWatch log-group ARN allowlist for bounded diagnosis queries. Empty disables DNS log reads; configs must also be associated with the selected VPC."
+  validation {
+    condition = length(var.diagnosis_dns_log_group_arns) <= 8 && alltrue([for arn in var.diagnosis_dns_log_group_arns :
+      can(regex("^arn:aws:logs:[a-z0-9-]+:[0-9]{12}:log-group:[A-Za-z0-9_./#-]+(:\\*)?$", arn)) &&
+      try(split(":", arn)[4] == data.aws_caller_identity.current.account_id, false)
+    ])
+    error_message = "Use at most eight explicit host-account log-group ARNs without wildcard group names."
+  }
+}
+
+variable "diagnosis_member_role_arns" {
+  type        = list(string)
+  default     = []
+  description = "Explicit reviewed member AWSopsReadOnlyRole ARN allowlist (the onboarding read-only role name is pinned); an enabled account registry row (with its ExternalId, unless first-party per ADR-011) and a verified assumed identity are also required. Empty disables member live reads."
+  validation {
+    condition = length(var.diagnosis_member_role_arns) <= 32 && alltrue([for arn in var.diagnosis_member_role_arns :
+      can(regex("^arn:aws:iam::[0-9]{12}:role/AWSopsReadOnlyRole$", arn)) &&
+      try(split(":", arn)[4] != data.aws_caller_identity.current.account_id, false)
+    ])
+    error_message = "Use at most 32 foreign-account AWSopsReadOnlyRole ARNs without wildcards or paths."
+  }
+  validation {
+    condition     = length(distinct(var.diagnosis_member_role_arns)) == length(var.diagnosis_member_role_arns)
+    error_message = "diagnosis_member_role_arns must not repeat an ARN."
+  }
+  validation {
+    condition     = length(var.diagnosis_member_role_arns) == 0 || var.diagnosis_evidence_loop_enabled
+    error_message = "diagnosis_member_role_arns requires diagnosis_evidence_loop_enabled; clear it before turning the loop off."
+  }
 }
 
 variable "ai_insights_enabled" {
@@ -274,13 +364,13 @@ variable "worker_image_tag" {
 
 variable "remediation_enabled" {
   type        = bool
-  description = "ADR-029+036 remediation/mutation substrate gate. ⛔ DECISION REVERSED 2026-06-11 (3-AI consensus; docs/reviews/2026-06-11-high-risk-adr-reversal-consensus.md) — DO NOT ENABLE. The mutating direction is abandoned (AWSops stays read-only; mutation = operator's SSM/Change Manager/IaC). Stays false permanently; the flag-OFF substrate is frozen, not deleted. false = 0 mutating resources, 0 cost, ZERO live AWS mutation; the always-present catalog/plan/audit tables (migration v4) are harmless when off."
+  description = "ADR-005[legacy 029] remediation/mutation substrate gate. ⛔ DECISION REVERSED 2026-06-11 (3-AI consensus; docs/reviews/2026-06-11-high-risk-adr-reversal-consensus.md) — DO NOT ENABLE. The mutating direction is abandoned (AWSops stays read-only; mutation = operator's SSM/Change Manager/IaC). Stays false permanently; the flag-OFF substrate is frozen, not deleted. false = 0 mutating resources, 0 cost, ZERO live AWS mutation; the always-present catalog/plan/audit tables (migration v4) are harmless when off."
   default     = false
 }
 
 variable "integrations_write_enabled" {
   type        = bool
-  description = "ADR-040/041 external knowledge/comms DATA-write gate (Slack/Notion/Jira records). Reuses the action_catalog facade + SM + executor but on a FULLY-INDEPENDENT control plane (own flag env, own kill-switch under ops/<project>/integrations-write/enabled, own no-AWS-mutation IAM) so enabling it can NEVER enable AWS-resource mutation (which stays remediation_enabled-frozen). NON-AWS-resource only. false (default) = 0 resources, zero cost, no behavior change. Ships flag-OFF; owner enables (requires agentcore/integrations + workers enabled)."
+  description = "ADR-007[legacy 040] external knowledge/comms DATA-write gate (Slack/Notion/Jira records). Reuses the action_catalog facade + SM + executor but on a FULLY-INDEPENDENT control plane (own flag env, own kill-switch under ops/<project>/integrations-write/enabled, own no-AWS-mutation IAM) so enabling it can NEVER enable AWS-resource mutation (which stays remediation_enabled-frozen). NON-AWS-resource only. false (default) = 0 resources, zero cost, no behavior change. Ships flag-OFF; owner enables (requires agentcore/integrations + workers enabled)."
   default     = false
   validation {
     # The shared executor infra (re_or_iw) reuses workers_enabled resources (worker_lambda role, pg8000
@@ -294,33 +384,33 @@ variable "integrations_write_enabled" {
 
 variable "hybrid_routing_enabled" {
   type        = bool
-  description = "ADR-038 hybrid chat routing gate. false (default) = legacy regex-only routing, no classifier Bedrock calls, no extra IAM. Enable only after the golden-set gate (scripts/v2/routing-accuracy.mjs) passes >=85% and >= +15pp over the regex baseline."
+  description = "ADR-003[legacy 038] hybrid chat routing gate. false (default) = legacy regex-only routing, no classifier Bedrock calls, no extra IAM. Enable only after the golden-set gate (scripts/v2/routing-accuracy.mjs) passes >=85% and >= +15pp over the regex baseline. Last run 2026-10-29 on Haiku 5.5 without temperature: 67 cases, regex 71.6% -> hybrid 91.0%."
   default     = false
 }
 
 variable "multi_route_synthesis_enabled" {
   type        = bool
-  description = "ADR-044 cross-domain auto-synthesis gate (web/lib/synthesize.ts, MULTI_ROUTE_SYNTHESIS_ENABLED). false (default) = single-route chat only, no direct Sonnet Bedrock call from the web task, no extra IAM. PR #153 review: the web task role previously had no bedrock:InvokeModel grant covering the Sonnet model synthesize.ts calls directly (only the ADR-038 Haiku classifier policy existed) — this flag gates the matching IAM statement."
+  description = "ADR-003[legacy 044] cross-domain auto-synthesis gate (web/lib/synthesize.ts, MULTI_ROUTE_SYNTHESIS_ENABLED). false (default) = single-route chat only, no synthesis Sonnet call from the web task and no synthesis-specific IAM (the always-on task_web_models grant still covers Sonnet 5.5 InvokeModel for query generation and help). PR #153 review: the web task role previously had no bedrock:InvokeModel grant covering the Sonnet model synthesize.ts calls directly (only the ADR-003[legacy 038] Haiku classifier policy existed) — this flag gates the matching IAM statement."
   default     = false
 }
 
 variable "incident_lifecycle_enabled" {
   type        = bool
-  description = "ADR-032 incident lifecycle gate. ⚠️ DOWNGRADED 2026-06-11 (3-AI consensus) — the autonomous mitigation/action path is abandoned (it routed through the reversed ADR-029/036). If ever enabled, it is ANALYSIS-ONLY (read-only Triage/investigation/RCA, recommendation-only, NO mutation routing). false (default) = 0 lifecycle infra, 0 cost, ZERO autonomous triggers; the always-present incident_* tables (migration v5) are harmless when off. REQUIRES workers_enabled=true to enable."
+  description = "ADR-006[legacy 032] incident lifecycle gate. ⚠️ DOWNGRADED 2026-06-11 (3-AI consensus) — the autonomous mitigation/action path is abandoned (it routed through the reversed legacy ADR-029/036; ADR-005 stays frozen). If ever enabled, it is ANALYSIS-ONLY (read-only Triage/investigation/RCA, recommendation-only, NO mutation routing). false (default) = 0 lifecycle infra, 0 cost, ZERO autonomous triggers; the always-present incident_* tables (migration v5) are harmless when off. REQUIRES workers_enabled=true to enable."
   default     = false
 }
 
 variable "rca_writeback_enabled" {
   type        = bool
-  description = "ADR-034 RCA write-back gate (observability-write tier). false (default) = 0 write-back infra, 0 cost, ZERO OpsCenter/Incident-Manager write. The always-present incident_writeback table (migration v6) is harmless when off. REQUIRES incident_lifecycle_enabled=true (adds a stage to the incident SM, reads incidents.rca) AND remediation_enabled=true (reuses the opscenter-create-opsitem catalog action + action_opscenter_write per-action role from remediation.tf — frozen-substrate reuse, so decoupling onto a self-contained role is a prerequisite before activation; the validation below enforces this fail-loud). The webhook marker-drop filter is ALWAYS-ON (a harmless safety filter independent of this flag)."
+  description = "ADR-006[legacy 034] RCA write-back gate (observability-write tier). false (default) = 0 write-back infra, 0 cost, ZERO OpsCenter/Incident-Manager write. The always-present incident_writeback table (migration v6) is harmless when off. REQUIRES incident_lifecycle_enabled=true (adds a stage to the incident SM, reads incidents.rca) AND remediation_enabled=true (reuses the opscenter-create-opsitem catalog action + action_opscenter_write per-action role from remediation.tf — frozen-substrate reuse, so decoupling onto a self-contained role is a prerequisite before activation; the validation below enforces this fail-loud). The webhook marker-drop filter is ALWAYS-ON (a harmless safety filter independent of this flag)."
   default     = false
 
   validation {
-    # ADR-034 vs 029/036 reversal: the write-back currently reuses the frozen substrate's
+    # ADR-006[legacy 034] vs 029/036 reversal: the write-back currently reuses the frozen substrate's
     # action_opscenter_write role (count = remediation_enabled). Enabling rwb alone would
     # hit an index-out-of-range deep in incidents.tf — fail here with the real story instead.
     condition     = !var.rca_writeback_enabled || var.remediation_enabled
-    error_message = "rca_writeback_enabled currently requires remediation_enabled (frozen substrate role reuse — see ADR-034 banner). remediation_enabled is DO-NOT-ENABLE (2026-06-11 reversal): to activate write-back, first decouple it onto a self-contained role."
+    error_message = "rca_writeback_enabled currently requires remediation_enabled (frozen substrate role reuse — see ADR-006[legacy 034] banner). remediation_enabled is DO-NOT-ENABLE (2026-06-11 reversal): to activate write-back, first decouple it onto a self-contained role."
   }
 }
 
@@ -386,6 +476,21 @@ variable "inventory_stale_after_minutes" {
   }
 }
 
+variable "agent_external_id" {
+  type        = string
+  default     = ""
+  sensitive   = true
+  description = "Shared sts:ExternalId the AgentCore MCP Lambdas send when assuming a target account's AWSopsReadOnlyRole (AWSOPS_EXTERNAL_ID). It must match the ExternalId condition on the target's agent-Lambda trust statement. Empty (default) sets no variable and sends no ExternalId. Not a credential; marked sensitive to keep the value out of plan output."
+  validation {
+    # RE2 caps repetition counts at 1000, so the length bound is checked separately.
+    condition = var.agent_external_id == "" || (
+      length(var.agent_external_id) >= 8 && length(var.agent_external_id) <= 1224 &&
+      can(regex("^[A-Za-z0-9_+=,.@:/-]+$", var.agent_external_id))
+    )
+    error_message = "agent_external_id must be empty or 8-1224 characters of A-Z, a-z, 0-9 and _+=,.@:/-."
+  }
+}
+
 variable "eks_auto_register_enabled" {
   type        = bool
   description = "EKS auto-register gate: EventBridge(CloudTrail AssociateAccessPolicy/DeleteAccessEntry for the task role) -> Lambda -> eks_registrations. Observe-only toward AWS (no resource mutation). Requires workers_enabled (pg8000 layer reuse). false (default) = 0 resources."
@@ -439,4 +544,48 @@ variable "network_path_check_enabled" {
     condition     = !var.network_path_check_enabled || var.workers_enabled
     error_message = "network_path_check_enabled requires workers_enabled=true (reuses the worker role/pg8000 layer/VPC + jobs queue)."
   }
+}
+
+variable "model_provider" {
+  type        = string
+  description = "Model family for chat, query generation, synthesis, routing and AI Diagnosis (models.tf). mixed (default) = GPT-6 Luna chat + GPT-6.1 Terra query generation with Claude fallback + Claude elsewhere, all on Bedrock. bedrock_claude = Claude only on Bedrock. bedrock_openai = GPT-6 Luna/GPT-6.1 Terra only on Bedrock (no Claude fallback). anthropic_api = Claude through the Anthropic API (api.anthropic.com over the existing NAT egress) using the key in anthropic_api_key_secret_arn; no Bedrock model grants."
+  default     = "mixed"
+  validation {
+    condition     = contains(["mixed", "bedrock_claude", "bedrock_openai", "anthropic_api"], var.model_provider)
+    error_message = "model_provider must be one of mixed, bedrock_claude, bedrock_openai, anthropic_api."
+  }
+}
+
+variable "anthropic_api_key_secret_arn" {
+  type        = string
+  description = "Secrets Manager secret ARN holding the Anthropic API key (plain string, or JSON with an api_key field), encrypted with the AWS managed aws/secretsmanager key. Required when model_provider = anthropic_api, ignored otherwise. Only this ARN is readable by the model-calling roles."
+  default     = null
+  validation {
+    condition     = var.anthropic_api_key_secret_arn == null || can(regex("^arn:aws[a-z-]*:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+$", var.anthropic_api_key_secret_arn))
+    error_message = "anthropic_api_key_secret_arn must be a Secrets Manager secret ARN."
+  }
+  validation {
+    condition     = var.model_provider != "anthropic_api" || var.anthropic_api_key_secret_arn != null
+    error_message = "model_provider = anthropic_api requires anthropic_api_key_secret_arn."
+  }
+}
+
+variable "agentcore_chat_model_id" {
+  type        = string
+  default     = ""
+  description = "Chat runtime model override (model_provider = mixed only) delivered to AgentCore on every provisioning run. Empty keeps the GPT-6 Luna default; global.anthropic.claude-sonnet-5-5 is the reviewed rollback. Both are granted by local.agentcore_model_resources."
+  validation {
+    condition     = contains(["", "global.openai.gpt-6-luna", "global.anthropic.claude-sonnet-5-5"], var.agentcore_chat_model_id)
+    error_message = "Use an empty value, global.openai.gpt-6-luna or global.anthropic.claude-sonnet-5-5."
+  }
+  validation {
+    condition     = var.agentcore_chat_model_id == "" || var.model_provider == "mixed"
+    error_message = "agentcore_chat_model_id applies only to model_provider = mixed; other providers set the chat model themselves."
+  }
+}
+
+variable "chat_section_handoff_enabled" {
+  type        = bool
+  description = "Cross-gateway chat handoff (docs/reference/05-agentcore.md, Section handoff). false (default) = built-in section agents never consult other gateways. Applies to built-in section agents only; mapped to the runtime env CHAT_SECTION_HANDOFF_ENABLED by scripts/v2/agentcore/provision.py."
+  default     = false
 }

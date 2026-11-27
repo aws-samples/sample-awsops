@@ -149,7 +149,7 @@ class TestPrometheusMimirServiceGraph:
         assert aliases, "identity label aliases must be explicit for the catalog/mapper contract"
         suffixes = set(re.findall(r"'([a-z_]+)'", aliases.group(1)))
         for kind, metric, endpoints in [
-            ("prometheus", "traces_service_graph_request_total", ("client", "server")),
+            ("prometheus", "traces_service_graph_request_total", ("client", "server", "connection_type")),
             ("mimir", "istio_requests_total", ("source_workload", "destination_workload")),
         ]:
             query = gc.build_graph_queries(kind, {"metrics": [metric]})[0]["query"]["args_template"]["query"]

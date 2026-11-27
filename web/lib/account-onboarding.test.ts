@@ -146,6 +146,21 @@ describe('account onboarding script', () => {
     expect(statement[2]).toEqual({ Ref: 'AWS::NoValue' });
   });
 
+  it('offers an optional agent Lambda trust statement with the same ExternalId protection but never fills it', () => {
+    const guide = buildAccountOnboarding(input, config);
+    const parameters = JSON.parse(guide.script.split("<<'AWSOPS_PARAMETERS'\n")[1].split('\nAWSOPS_PARAMETERS')[0]);
+    expect(parameters.map((p: { ParameterKey: string }) => p.ParameterKey)).not.toContain('AgentLambdaRoleArn');
+    const template = JSON.parse(guide.script.split("<<'AWSOPS_TEMPLATE'\n")[1].split('\nAWSOPS_TEMPLATE')[0]);
+    expect(template.Parameters.AgentLambdaRoleArn).toMatchObject({ Default: '' });
+    const statement = template.Resources.AWSopsReadOnlyRole.Properties.AssumeRolePolicyDocument.Statement[2]['Fn::If'];
+    expect(statement[0]).toBe('HasAgentLambdaRoleArn');
+    expect(statement[1]).toMatchObject({
+      Principal: { AWS: { Ref: 'AgentLambdaRoleArn' } }, Action: 'sts:AssumeRole',
+      Condition: { 'Fn::If': ['HasExternalId', { StringEquals: { 'sts:ExternalId': { Ref: 'ExternalId' } } }, { Ref: 'AWS::NoValue' }] },
+    });
+    expect(statement[2]).toEqual({ Ref: 'AWS::NoValue' });
+  });
+
   it.each(['*', 'arn:aws:iam::111111111111:root', 'arn:aws:iam::333333333333:role/collector'])(
     'rejects an invalid configured inventory principal %s', (inventoryTaskRoleArn) => {
       expect(() => buildAccountOnboarding(input, { ...config, inventoryTaskRoleArn })).toThrow();

@@ -28,7 +28,8 @@ for (const asset of [
 }
 
 assert.match(html, /<h1[^>]*>[\s\S]*AWSops[\s\S]*<\/h1>/);
-assert.match(html, /https:\/\/awsops\.atomai\.click\//);
+assert.match(html, /https:\/\/github\.com\/aws-samples\/sample-awsops/);
+assert.doesNotMatch(html, /atomai\.click|github\.com\/Atom-oh\//, 'no personal-domain or private-repo links');
 assert.match(html, />9<[\s\S]*AI 라우팅 섹션/);
 assert.match(html, />6<[\s\S]*Well-Architected 필러/);
 assert.match(html, />3<[\s\S]*리포트 내보내기 형식/);

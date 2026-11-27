@@ -1,13 +1,15 @@
-import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-runtime';
+import { ConverseCommand } from '@aws-sdk/client-bedrock-runtime';
+import { modelRuntimeClient, type ModelRuntimeClient } from './model-runtime';
 import { SECTIONS } from './sections';
 import { renderRecentHistory, type HistoryMsg } from './chat-context';
+import { thinkingOffFields } from './bedrock';
 
-// ADR-038: Haiku routing classifier. Pure module — Bedrock call is injectable for tests.
+// ADR-003[legacy 038]: Haiku routing classifier. Pure module — Bedrock call is injectable for tests.
 // Output is ADVISORY ONLY (routing), never used for authorization decisions.
 
 const VALID_KEYS = new Set(SECTIONS.map((s) => s.key));
 const REGION = process.env.AWS_REGION || 'ap-northeast-2';
-const MODEL_ID = process.env.CLASSIFIER_MODEL_ID || 'global.anthropic.claude-haiku-4-5-20251001-v1:0';
+const MODEL_ID = process.env.CLASSIFIER_MODEL_ID || 'global.anthropic.claude-haiku-5-5';
 // Measured live (2026-06-10): the global. cross-region profile runs 1.9–3.0s from ap-northeast-2,
 // so the spec's original 1s abort starved every call into fallback. 3500ms covers observed p99.
 const TIMEOUT_MS = Number(process.env.CLASSIFIER_TIMEOUT_MS || 3500);
@@ -35,10 +37,10 @@ export interface RankedKey { key: string; score: number }
 export type SendFn = (system: string, query: string, modelId: string) => Promise<string>;
 export interface ClassifierOpts { send?: SendFn; retryDelayMs?: number }
 
-let client: BedrockRuntimeClient | null = null;
+let client: ModelRuntimeClient | null = null;
 
 const bedrockSend: SendFn = async (system, query, modelId) => {
-  if (!client) client = new BedrockRuntimeClient({ region: REGION });
+  if (!client) client = modelRuntimeClient({ region: REGION });
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), TIMEOUT_MS); // real aborting timeout (spec §6)
   try {
@@ -46,7 +48,8 @@ const bedrockSend: SendFn = async (system, query, modelId) => {
       modelId,
       system: [{ text: system }],
       messages: [{ role: 'user', content: [{ text: query }] }],
-      inferenceConfig: { maxTokens: 120, temperature: 0 },
+      inferenceConfig: { maxTokens: 120 },
+      ...thinkingOffFields(modelId),
     }), { abortSignal: ac.signal });
     const block = res.output?.message?.content?.find((c) => 'text' in c);
     return (block && 'text' in block && block.text) || '';
@@ -81,8 +84,8 @@ const CTX_OPTS = { turns: 4, perMsgChars: 300, totalChars: 1200 };
  * doesn't misread a context-dependent follow-up in isolation — e.g. "저걸 클러스터 안에서 어디서
  * 쓰나" reads as container/EKS alone, but is really "continue investigating the CloudTrail lead
  * from the last turn" (monitoring). No-op when there's no history (identical to the legacy call).
- * Regex keyword matching (route.ts matchedSections) intentionally still sees only the raw current
- * prompt — history text spuriously matching an unrelated keyword must not turn a clean single
+ * Regex keyword matching (route.ts matchedSections) intentionally still sees only the current
+ * prompt, never history — history text spuriously matching an unrelated keyword must not turn a clean single
  * regex match into a false ambiguous one; only the LLM classifier path gets this context.
  */
 export function buildClassifierContext(messages: HistoryMsg[] | undefined, prompt: string): string {

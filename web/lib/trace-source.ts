@@ -34,6 +34,18 @@ export interface TraceSpan extends TraceIdentity {
   status?: 'ok' | 'error' | 'unset';
   links?: { traceId: string; spanId: string }[];
   serviceVersion?: string;
+  /** Allowlisted telemetry claims; inventory validation is required before EC2 attribution. */
+  cloudResourceId?: string;
+  hostId?: string;
+  serviceInstanceId?: string;
+  /** Explicit inference metadata only; prompts, completions and HTTP bodies are never retained. */
+  runtimeArn?: string;
+  runtimeResourceArn?: string;
+  genAiProvider?: string;
+  genAiModel?: string;
+  inferenceEndpoint?: string;
+  inferencePort?: number;
+  rpcService?: string;
   messagingSystem?: string;
   messagingDestination?: string;
   messagingBroker?: string;
@@ -45,11 +57,17 @@ export interface TraceSpan extends TraceIdentity {
   k8sDeployment?: string;
   startMs: number;
   durationMs: number;
+  /** Aggregate rows only: the number of spans this row stands for (absent = one span). Its
+   *  durationMs is then the summed duration, startMs the latest start and firstStartMs the earliest. */
+  weight?: number;
+  firstStartMs?: number;
+  /** Aggregate rows only: bounded distinct pod names behind the row. */
+  k8sPods?: string[];
 }
 
 export interface TraceSource {
   available(): Promise<boolean>;
-  recentSpans(windowMins: number, cap: number, endMs?: number): Promise<SourceRead<TraceSpan>>;
+  recentSpans(windowMins: number, cap: number, endMs?: number): Promise<TraceRead>;
 }
 
 export interface ServiceGraphCall {
@@ -58,6 +76,17 @@ export interface ServiceGraphCall {
   count: number;
   clientIdentity?: TraceIdentity;
   serverIdentity?: TraceIdentity;
+  /** 'trace': counted from parent/child (or link) span pairs, so count is a span count.
+   *  Absent: a service-graph metric increase. */
+  evidence?: 'trace';
+  rel?: 'calls' | 'linked';
+  /** Tempo service-graph connection_type label (database, messaging_system, virtual_node). */
+  connectionType?: string;
+}
+
+/** Trace sources may also return span-pair edges they already aggregated at the source. */
+export interface TraceRead extends SourceRead<TraceSpan> {
+  calls?: ServiceGraphCall[];
 }
 
 // Never use backend exceptions, status messages, SQL, previews or credentials as reasons.
@@ -139,7 +168,7 @@ type ConnConfig = Awaited<ReturnType<typeof resolveConnConfig>>;
 interface ResolvedSource { sourceId: string; connConfig?: ConnConfig; reason?: Reason }
 
 /** Resolve identity before credentials, so even a secret lookup failure identifies the actual row. */
-async function resolveSource(kind: 'clickhouse' | 'tempo' | 'prometheus' | 'mimir', instanceId?: number): Promise<ResolvedSource> {
+export async function resolveSource(kind: 'clickhouse' | 'tempo' | 'prometheus' | 'mimir', instanceId?: number): Promise<ResolvedSource> {
   let sourceId = `${kind}:${instanceId ?? 'default'}`;
   try {
     const row = instanceId !== undefined ? await getDatasource(instanceId) : await getDefaultDatasource(kind);
@@ -172,6 +201,12 @@ export class FakeTraceSource implements TraceSource {
 
 // --- Shared allowlisted OTel metadata ---------------------------------------------------------
 
+function identityClaim(value: unknown): string | undefined {
+  const claim = text(value);
+  return claim && claim.length <= 512 && !/[\u0000-\u001f\u007f]/.test(claim)
+    ? claim.trim() : undefined;
+}
+
 function spanMetadata(out: TraceSpan, resource: Obj, span: Obj): void {
   const fields: Partial<Record<keyof TraceSpan, string | undefined>> = {
     accountId: text(resource['cloud.account.id']),
@@ -179,6 +214,15 @@ function spanMetadata(out: TraceSpan, resource: Obj, span: Obj): void {
     environment: text(resource['deployment.environment.name']) ?? text(resource['deployment.environment']),
     serviceNamespace: text(resource['service.namespace']),
     serviceVersion: text(resource['service.version']),
+    cloudResourceId: identityClaim(resource['cloud.resource_id']),
+    hostId: identityClaim(resource['host.id']),
+    serviceInstanceId: identityClaim(resource['service.instance.id']),
+    runtimeResourceArn: identityClaim(resource['agentcore.runtime.arn']),
+    runtimeArn: identityClaim(span['agentcore.runtime.arn']),
+    genAiProvider: identityClaim(span['gen_ai.provider.name']) ?? identityClaim(span['gen_ai.system']),
+    genAiModel: identityClaim(span['gen_ai.request.model']) ?? identityClaim(span['aws.bedrock.model_id']),
+    inferenceEndpoint: identityClaim(span['server.address']) ?? identityClaim(span['net.peer.name']),
+    rpcService: identityClaim(span['rpc.service']),
     k8sNamespace: text(resource['k8s.namespace.name']), k8sCluster: text(resource['k8s.cluster.name']),
     k8sPod: text(resource['k8s.pod.name']), k8sDeployment: text(resource['k8s.deployment.name']),
     dbSystem: text(span['db.system']), dbName: text(span['db.name']),
@@ -191,6 +235,7 @@ function spanMetadata(out: TraceSpan, resource: Obj, span: Obj): void {
   for (const [key, value] of Object.entries(fields)) if (value !== undefined) Object.assign(out, { [key]: value });
   const address = text(span['server.address']) ?? text(span['net.peer.name']);
   const port = numeric(span['server.port']) ?? numeric(span['net.peer.port']);
+  if (port !== undefined && Number.isInteger(port) && port > 0 && port <= 65535) out.inferencePort = port;
   if (out.messagingSystem && address && port !== undefined
     && Number.isInteger(port) && port > 0 && port <= 65535) {
     out.messagingBroker = `${address.trim().toLowerCase()}:${port}`;
@@ -289,7 +334,7 @@ const DEFAULT_OTEL_SQL_TEMPLATE =
   'WHERE Timestamp >= now() - INTERVAL {window} MINUTE AND Timestamp <= now() ORDER BY Timestamp DESC LIMIT {cap}';
 const CLICKHOUSE_ROW_CAP = 1000; // clickhouse_mcp.MAX_ROWS_CAP
 
-function clickhouseRows(result: unknown): { rows?: unknown[]; reasons: Reason[] } {
+export function clickhouseRows(result: unknown): { rows?: unknown[]; reasons: Reason[] } {
   if (Array.isArray(result)) return { rows: result, reasons: [] };
   const r = object(result);
   const inner = object(r?.result);
@@ -348,6 +393,233 @@ export class ClickHouseOtelTraceSource implements TraceSource {
     }
     requireEmptyProof(payload, items, reasons);
     return readResult(sourceId, window, items, reasons);
+  }
+}
+
+// --- ClickHouse aggregate (edges counted in ClickHouse over the whole window) ----------------
+
+/** Which optional columns the catalog found; the aggregate reads the same table it introspected. */
+export interface OtelAggregateShape { table: string; spanKind: boolean; statusCode: boolean; links: boolean }
+
+const DEFAULT_OTEL_SHAPE: OtelAggregateShape = { table: 'otel_traces', spanKind: true, statusCode: true, links: true };
+const IDENT = '(?:`(?:[^`]|``)+`|[A-Za-z_][A-Za-z0-9_]*)';
+// Only graph_catalog.py's deterministic otel_v1 template qualifies; generated or custom SQL keeps
+// the span reader, because its columns are not known to follow the exporter schema.
+const CATALOG_OTEL_TEMPLATE = new RegExp(
+  `^SELECT (TraceId, SpanId, ParentSpanId, ServiceName[^;]*?) FROM (${IDENT}(?:\\.${IDENT})?) ` +
+  'WHERE Timestamp >= now\\(\\) - INTERVAL \\{window\\} MINUTE AND Timestamp <= now\\(\\) ' +
+  'ORDER BY Timestamp DESC LIMIT \\{cap\\}$');
+
+// Exactly the bare exporter columns graph_catalog.py can select. Generated templates share the
+// otel_v1 mapper but alias other columns (`attrs AS ResourceAttributes`); those are not proof of
+// exporter Map columns, so any alias, expression or unknown column keeps the span reader.
+const EXPORTER_COLUMNS = new Set([
+  'TraceId', 'SpanId', 'ParentSpanId', 'ServiceName', 'SpanKind', 'SpanName', 'StatusCode',
+  '`Links.TraceId`', '`Links.SpanId`', 'Timestamp', 'Duration', 'ResourceAttributes', 'SpanAttributes',
+]);
+const REQUIRED_EXPORTER_COLUMNS = ['TraceId', 'SpanId', 'ParentSpanId', 'ServiceName', 'Timestamp',
+  'Duration', 'ResourceAttributes', 'SpanAttributes'];
+
+/** The aggregate shape for a registry template, or undefined when it is not the catalog's. */
+export function otelAggregateShape(sqlTemplate?: string): OtelAggregateShape | undefined {
+  if (sqlTemplate === undefined) return DEFAULT_OTEL_SHAPE;
+  const match = CATALOG_OTEL_TEMPLATE.exec(sqlTemplate);
+  if (!match) return undefined;
+  const columns = match[1].split(',').map((c) => c.trim());
+  if (new Set(columns).size !== columns.length || columns.some((c) => !EXPORTER_COLUMNS.has(c))
+      || REQUIRED_EXPORTER_COLUMNS.some((c) => !columns.includes(c))) return undefined;
+  return {
+    table: match[2], spanKind: columns.includes('SpanKind'), statusCode: columns.includes('StatusCode'),
+    links: columns.includes('`Links.TraceId`') && columns.includes('`Links.SpanId`'),
+  };
+}
+
+const list = (keys: readonly string[]) => `[${keys.map((k) => `'${k}'`).join(', ')}]`;
+// Only the attributes spanMetadata reads are grouped. Pod names and per-host/per-process claims
+// would multiply rows, so pods are collected as a bounded array and the three EC2 claim keys are
+// reduced to what claimedInstance (trace-graph.ts) can act on: bare EC2 IDs bind and ARNs bind or
+// veto, both kept verbatim. Other host.id/service.instance.id values are ignored by that check and
+// dropped. Any other cloud.resource_id value vetoes binding, so it becomes one fixed 'unbindable'
+// value: the veto survives while host UUIDs stop splitting groups.
+const AGG_RESOURCE_KEYS = [
+  'service.name', 'cloud.account.id', 'cloud.region', 'deployment.environment.name',
+  'deployment.environment', 'service.namespace', 'service.version', 'cloud.resource_id', 'host.id',
+  'service.instance.id', 'k8s.namespace.name', 'k8s.cluster.name', 'k8s.deployment.name',
+  'agentcore.runtime.arn',
+] as const;
+const AGG_SPAN_KEYS = [
+  'db.system', 'db.name', 'server.address', 'net.peer.name', 'server.port', 'net.peer.port',
+  'peer.service', 'messaging.system', 'messaging.destination.name', 'messaging.destination',
+  'agentcore.runtime.arn', 'gen_ai.provider.name', 'gen_ai.system', 'gen_ai.request.model',
+  'aws.bedrock.model_id', 'rpc.service',
+] as const;
+// Node scope only (trace-graph.ts scope()); edge endpoints must land on the same service nodes.
+const AGG_IDENTITY_KEYS = [
+  'service.name', 'cloud.account.id', 'cloud.region', 'deployment.environment.name',
+  'deployment.environment', 'service.namespace', 'k8s.namespace.name', 'k8s.cluster.name',
+] as const;
+const AGG_POD_CAP = 20;
+const EC2_CLAIM = "match(v, '^i-[0-9a-f]{8}([0-9a-f]{9})?$') OR startsWith(v, 'arn:')";
+
+function aggregateSql(shape: OtelAggregateShape, windowMins: number, endMs: number, limit: number) {
+  const window = `Timestamp >= fromUnixTimestamp64Milli(${endMs}) - INTERVAL ${windowMins} MINUTE ` +
+    `AND Timestamp <= fromUnixTimestamp64Milli(${endMs})`;
+  const kind = shape.spanKind ? 'SpanKind' : "'' AS SpanKind";
+  const status = shape.statusCode ? 'StatusCode' : "'' AS StatusCode";
+  // Ordinary HTTP peers still collapse. Explicit inference destinations must survive
+  // grouping even when the managed service exports no matching server span.
+  const groups = 'SELECT ServiceName, SpanKind, StatusCode, RA AS ResourceAttributes, SA AS SpanAttributes, ' +
+    'count() AS Weight, intDiv(sum(Duration), 1000000) AS DurationMsSum, toUnixTimestamp64Milli(max(Timestamp)) AS LastTimestamp, ' +
+    'toUnixTimestamp64Milli(min(Timestamp)) AS FirstTimestamp, any(TraceId) AS SampleTraceId, ' +
+    `any(SpanId) AS SampleSpanId, groupUniqArray(${AGG_POD_CAP})(Pod) AS Pods FROM (` +
+    `SELECT ServiceName, ${kind}, ${status}, Duration, Timestamp, TraceId, SpanId, ` +
+    "ResourceAttributes['k8s.pod.name'] AS Pod, " +
+    `mapSort(mapApply((k, v) -> (k, if(k = 'cloud.resource_id' AND NOT (${EC2_CLAIM}), 'unbindable', v)), ` +
+    `mapFilter((k, v) -> has(${list(AGG_RESOURCE_KEYS)}, k) AND (k NOT IN ('host.id', 'service.instance.id') ` +
+    `OR ${EC2_CLAIM}), ResourceAttributes))) AS RA, ` +
+    "if(SpanAttributes['db.system'] != '' OR SpanAttributes['messaging.system'] != '' " +
+    "OR SpanAttributes['agentcore.runtime.arn'] != '' OR SpanAttributes['gen_ai.request.model'] != '' " +
+    "OR SpanAttributes['aws.bedrock.model_id'] != '', " +
+    `mapSort(mapFilter((k, v) -> has(${list(AGG_SPAN_KEYS)}, k), SpanAttributes)), ` +
+    'mapFilter((k, v) -> false, SpanAttributes)) AS SA ' +
+    `FROM ${shape.table} WHERE ${window}) ` +
+    `GROUP BY ServiceName, SpanKind, StatusCode, RA, SA ORDER BY Weight DESC LIMIT ${limit}`;
+  // Both join sides carry only the sorted identity map, so the hash build holds one small row per
+  // span rather than every span's raw attribute map, and equal identities compare equal.
+  const identity = `mapSort(mapFilter((k, v) -> has(${list(AGG_IDENTITY_KEYS)}, k), ResourceAttributes)) AS R`;
+  const pairs = (child: string, on: string) =>
+    'SELECT p.ServiceName AS ClientService, p.R AS ClientResource, c.ServiceName AS ServerService, ' +
+    `c.R AS ServerResource, count() AS Weight FROM (${child}) AS c INNER JOIN (SELECT TraceId, SpanId, ` +
+    `ServiceName, ${identity} FROM ${shape.table} WHERE ${window}) AS p ON ${on} ` +
+    'GROUP BY ClientService, ClientResource, ServerService, ServerResource ' +
+    'HAVING NOT (ClientService = ServerService AND ClientResource = ServerResource) ' +
+    `ORDER BY Weight DESC LIMIT ${limit}`;
+  const calls = pairs(
+    `SELECT TraceId, ParentSpanId, ServiceName, ${identity} FROM ${shape.table} ` +
+    `WHERE ${window} AND ParentSpanId != ''`,
+    'c.TraceId = p.TraceId AND c.ParentSpanId = p.SpanId');
+  // ARRAY JOIN raises on unequal nested-array lengths; such rows are filtered before it.
+  const links = shape.links ? pairs(
+    `SELECT LinkTraceId, LinkSpanId, ServiceName, R FROM (SELECT \`Links.TraceId\` AS LT, ` +
+    `\`Links.SpanId\` AS LS, ServiceName, ${identity} FROM ${shape.table} WHERE ${window} ` +
+    'AND length(`Links.TraceId`) = length(`Links.SpanId`)) ARRAY JOIN LT AS LinkTraceId, LS AS LinkSpanId',
+    'c.LinkTraceId = p.TraceId AND c.LinkSpanId = p.SpanId') : undefined;
+  return { groups, calls, links };
+}
+
+function positiveCount(value: unknown): number | undefined {
+  const n = numeric(value);
+  return n !== undefined && Number.isSafeInteger(n) && n > 0 ? n : undefined;
+}
+
+function resourceIdentity(value: unknown, sourceId: string): TraceIdentity | undefined {
+  const resource = object(value);
+  if (!resource) return undefined;
+  const span = mapOtelRow({ ResourceAttributes: resource });
+  const out: TraceIdentity = { sourceId };
+  for (const key of ['accountId', 'region', 'environment', 'serviceNamespace', 'k8sNamespace', 'k8sCluster'] as const) {
+    if (span[key] !== undefined) out[key] = span[key];
+  }
+  return out;
+}
+
+/** Reads service nodes and span-pair edges as ClickHouse aggregates over the whole window, instead
+ *  of the newest raw spans. Counts are complete for the window unless a row limit is reached. When
+ *  an aggregate query fails (for example the join exceeds the connector's execution budget on a
+ *  busy table), the same table is read with the bounded newest-span reader instead, disclosed as
+ *  incomplete_collection, so a busy datasource degrades to sampling rather than a frozen graph. */
+export class ClickHouseOtelAggregateSource implements TraceSource {
+  constructor(
+    private readonly instanceId?: number, private readonly shape: OtelAggregateShape = DEFAULT_OTEL_SHAPE,
+    private readonly spanTemplate?: string,
+  ) {}
+
+  private async sampled(windowMins: number, cap: number, endMs: number): Promise<TraceRead> {
+    const read = await new ClickHouseOtelTraceSource(this.instanceId, this.spanTemplate).recentSpans(windowMins, cap, endMs);
+    if (read.status === 'error' || read.status === 'unavailable') return read;
+    const reasons = read.reasons.includes('incomplete_collection') ? read.reasons : [...read.reasons, 'incomplete_collection'];
+    return { ...read, reasons, status: 'partial' };
+  }
+  async available(): Promise<boolean> { return !(await resolveSource('clickhouse', this.instanceId)).reason; }
+
+  async recentSpans(windowMins: number, cap: number, endMs = Date.now()): Promise<TraceRead> {
+    const window = readWindow(windowMins, endMs);
+    const { sourceId, connConfig, reason } = await resolveSource('clickhouse', this.instanceId);
+    if (reason) return readResult(sourceId, window, [], [reason], reason === 'missing_configuration' ? 'unavailable' : 'error');
+    if (!validWindow(window) || !Number.isFinite(cap)) return readResult(sourceId, window, [], ['invalid_request']);
+    const limit = Math.min(CLICKHOUSE_ROW_CAP, Math.max(0, Math.floor(cap)));
+    if (!limit) return readResult(sourceId, window, [], ['cap_reached']);
+    const sql = aggregateSql(this.shape, Math.max(1, Math.floor(windowMins)), endMs, limit);
+    const query = (text: string) => invokeMcpLambdaTool({
+      kind: 'clickhouse', tool: 'clickhouse_query', args: { sql: text, max_rows: limit }, connConfig,
+    });
+    let payloads: unknown[];
+    try {
+      payloads = await Promise.all([sql.groups, sql.calls, ...(sql.links ? [sql.links] : [])].map(query));
+    } catch {
+      return this.sampled(windowMins, cap, endMs);
+    }
+    const reasons: Reason[] = [];
+    const results = payloads.map(clickhouseRows);
+    // Any failed aggregate leaves the window unproven; never publish nodes without their edges.
+    // A failed query falls back to sampling; a malformed response envelope fails the read.
+    if (results.some((result) => result.reasons.includes('query_failed'))) return this.sampled(windowMins, cap, endMs);
+    for (const result of results) {
+      if (!result.rows) return readResult(sourceId, window, [], result.reasons);
+      reasons.push(...result.reasons);
+      if (result.rows.length >= limit) reasons.push('cap_reached');
+    }
+    // Defensive clamp, as in the span reader: a connector ignoring max_rows stays bounded.
+    const [groupRows, callRows, linkRows = []] = results.map((r) => r.rows!.slice(0, limit));
+    const items: TraceSpan[] = [];
+    for (const value of groupRows) {
+      const row = object(value);
+      const weight = positiveCount(row?.Weight);
+      const last = numeric(row?.LastTimestamp), first = numeric(row?.FirstTimestamp);
+      const duration = numeric(row?.DurationMsSum);
+      if (!row || !text(row.ServiceName) || !text(row.SampleTraceId) || !text(row.SampleSpanId)
+          || weight === undefined || last === undefined || first === undefined || first > last
+          || duration === undefined || !Number.isSafeInteger(duration) || duration < 0
+          || (row.ResourceAttributes !== undefined && !object(row.ResourceAttributes))
+          || (row.SpanAttributes !== undefined && !object(row.SpanAttributes))) {
+        reasons.push('malformed_rows');
+        continue;
+      }
+      const item = mapOtelRow({
+        TraceId: row.SampleTraceId, SpanId: row.SampleSpanId, ServiceName: row.ServiceName,
+        SpanKind: row.SpanKind, StatusCode: row.StatusCode, Timestamp: last, Duration: 0,
+        ResourceAttributes: row.ResourceAttributes, SpanAttributes: row.SpanAttributes,
+      });
+      if (this.shape.statusCode && text(row.StatusCode) && !item.status) reasons.push('malformed_rows');
+      const pods = Array.isArray(row.Pods)
+        ? [...new Set(row.Pods.filter((p): p is string => !!text(p)))].slice(0, AGG_POD_CAP) : [];
+      if (!inWindow(item, window)) { reasons.push('incomplete_collection'); continue; }
+      items.push({ ...item, sourceId, weight, durationMs: duration, firstStartMs: first,
+        ...(pods.length ? { k8sPods: pods } : {}) });
+    }
+    const calls: ServiceGraphCall[] = [];
+    for (const [rows, rel] of [[callRows, 'calls'], [linkRows, 'linked']] as const) {
+      for (const value of rows) {
+        const row = object(value);
+        const count = positiveCount(row?.Weight);
+        const client = text(row?.ClientService), server = text(row?.ServerService);
+        const clientIdentity = resourceIdentity(row?.ClientResource, sourceId);
+        const serverIdentity = resourceIdentity(row?.ServerResource, sourceId);
+        if (!client || !server || count === undefined || !clientIdentity || !serverIdentity) {
+          reasons.push('malformed_rows');
+          continue;
+        }
+        calls.push({ client, server, count, clientIdentity, serverIdentity, evidence: 'trace', rel });
+      }
+    }
+    // Each aggregate needs its own empty proof: confirmed nodes with an unproven-empty pair query
+    // would otherwise publish as a complete graph without its edges.
+    for (const [i, payload] of payloads.entries()) {
+      if (results[i].rows!.length) continue;
+      const outer = object(payload), status = outer?.collectionStatus ?? object(outer?.result)?.collectionStatus;
+      if (status !== 'ok' && status !== 'empty' && !reasons.includes('empty_not_confirmed')) reasons.push('empty_not_confirmed');
+    }
+    return { ...readResult(sourceId, window, items, reasons), calls };
   }
 }
 
@@ -557,6 +829,8 @@ function parseServiceGraphCalls(value: unknown): { items: ServiceGraphCall[]; re
     }
     if (count === 0) continue; // valid zero traffic; no edge, no data-quality failure
     const item: ServiceGraphCall = { client, server, count };
+    const connectionType = text(metric.connection_type);
+    if (connectionType) item.connectionType = connectionType;
     const clientIdentity = metricIdentity(metric, 'client');
     const serverIdentity = metricIdentity(metric, 'server');
     if (clientIdentity) item.clientIdentity = clientIdentity;

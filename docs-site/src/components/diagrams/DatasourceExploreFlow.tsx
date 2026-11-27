@@ -96,12 +96,12 @@ export default function DatasourceExploreFlow(): React.ReactElement {
     const bottomFlowY = 220 * s;
 
     // ============================================================
-    // TOP FLOW: Natural Language -> Bedrock -> Query -> Execute -> Chart
+    // TOP FLOW: Natural Language -> Bedrock (Terra, Sonnet fallback) -> Query -> Execute -> Chart
     // ============================================================
     const topBoxH = 50 * s;
     const topLabels = [
       { label: 'Natural Language', sub: 'User Input', color: THEME.cyan },
-      { label: 'Bedrock Sonnet', sub: 'AI Generation', color: THEME.purple },
+      { label: 'GPT-6.1 Terra', sub: 'Sonnet 5.5 fallback', color: THEME.purple },
       { label: 'Generated Query', sub: 'PromQL / LogQL / SQL', color: THEME.cyan },
       { label: 'Execute', sub: 'Datasource API', color: THEME.green },
       { label: 'Multi-Series Chart', sub: 'Up to 8 Series', color: THEME.green },

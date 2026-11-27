@@ -69,9 +69,9 @@ TARGETS = {
     "flow-monitor-target": {
         "gateway": "network",
         "lambda_key": "flow-monitor",
-        "description": "VPC Flow Log analyzer (1 tool)",
+        "description": "VPC Flow Log configuration reader (1 tool)",
         "tools": [
-            {"name": "query_flow_logs", "description": "Query flow logs", "inputSchema": {"type": "object", "properties": {"vpc_id": _p("string", "VPC ID")}, "required": ["vpc_id"]}},
+            {"name": "query_flow_logs", "description": "Describe flow-log configuration and destinations for a VPC; returns no traffic records and does not prove an application or database connection", "inputSchema": {"type": "object", "properties": {"vpc_id": _p("string", "VPC ID")}, "required": ["vpc_id"]}},
         ],
     },
     # ===== Read-only MCP additions (2026-06-18): core-helpers (ops) + reachability-read (network) =====
@@ -93,7 +93,7 @@ TARGETS = {
         "description": "Aurora-backed topology & unused-resource reader (read-only): find_unused_resources, get_topology, query_inventory, inventory_summary",
         "tools": [
             {"name": "find_unused_resources", "description": "Find unused/orphaned resources from the synced inventory: orphan target groups (no LB / 0 healthy), empty CloudFront origins, dead/idle load balancers, unattached EBS volumes", "inputSchema": {"type": "object", "properties": {"category": _p("string", "Optional category filter, e.g. 'TargetGroup' or 'CloudFront'")}}},
-            {"name": "get_topology", "description": "Return the host-scoped materialized topology graph (nodes + edges) from Aurora. class='flow' (default) is the traffic-path graph (CF→LB→TG→target); 'infra' is resource relationships; 'trace' is observed telemetry. Omitted/null resource_id selects the whole class; a nonempty ID selects a node and its 1-hop neighbourhood before the 500-node/1000-edge caps. Inspect selection and truncation; edge truncation includes observed edge loss caused by the node cap. collection describes saved/source evidence; reader readOutcome and snapshotConsistent=false disclose failed verification or publication change. An absent snapshotConsistent is not proof of one coherent snapshot, and an empty selection does not establish an empty or healthy graph.", "inputSchema": {"type": "object", "properties": {"resource_id": _p("string", "Optional exact canonical node ID (e.g. cf:E123, alb:arn:aws:...) or exact raw ID after the first kind prefix (e.g. E123, arn:aws:...). Canonical matches take precedence; ambiguous raw IDs return candidate canonical IDs without selecting a graph. Omit or use null for an unscoped read. Supplied strings are trimmed; nonempty and at most 4096 characters. Use full canonical IDs for composite nodes."), "class": _p("string", "Graph class: 'flow' (traffic path, default), 'infra' (resource relationships), or 'trace' (observed telemetry)")}}},
+            {"name": "get_topology", "description": "Return the host-scoped materialized topology graph (nodes + edges) from Aurora. class='flow' (default) is the traffic-path graph (CF→LB→TG→target); 'infra' is resource relationships; 'trace' is observed telemetry. Optional class='service' reads the host service projection (200 entities/400 relations). It returns topology_entities_disabled before activation. For service, resource_id selects an exact returned entity ID and its neighbors; inspect snapshotId, sources, omissions and gaps. For the legacy classes, omitted/null resource_id selects the whole class; a nonempty ID selects a node and its 1-hop neighbourhood before the 500-node/1000-edge caps. Inspect selection and truncation; edge truncation includes observed edge loss caused by the node cap. collection describes saved/source evidence; reader readOutcome and snapshotConsistent=false disclose failed verification or publication change. An absent snapshotConsistent is not proof of one coherent snapshot, and an empty selection does not establish an empty or healthy graph.", "inputSchema": {"type": "object", "properties": {"resource_id": _p("string", "Optional exact canonical node ID (e.g. cf:E123, alb:arn:aws:...) or exact raw ID after the first kind prefix (e.g. E123, arn:aws:...). Canonical matches take precedence; ambiguous raw IDs return candidate canonical IDs without selecting a graph. Omit or use null for an unscoped read. Supplied strings are trimmed; nonempty and at most 4096 characters. Use full canonical IDs for composite nodes."), "class": _p("string", "Graph class: 'flow' (traffic path, default), 'infra' (resource relationships), 'trace' (observed telemetry), or 'service' (gated service snapshot)")}}},
             {"name": "query_inventory", "description": "List synced resources of one type (alb, nlb, target_group, cloudfront, ec2, ebs, security_group, route53, lambda, ecs_task, ecs_service, s3); the response includes a freshness block (healthy|degraded|stale|unavailable, from durable last-success + oldest-capture)", "inputSchema": {"type": "object", "properties": {"resource_type": _p("string", "Resource type to list"), "limit": _p("integer", "Max rows (default 200, cap 500)"), "resource_id": _p("string", "Optional exact CloudFront ID; returns only matching identity (id), at most one row")}, "required": ["resource_type"]}},
             {"name": "inventory_summary", "description": "Per-type host/self-scoped current_count from Aurora inventory resources, plus last-run row_count and per-type freshness (healthy|degraded|stale|unavailable; degraded includes attribute blind spots)", "inputSchema": {"type": "object", "properties": {}}},
         ],
@@ -140,7 +140,7 @@ TARGETS = {
             ), "inputSchema": {"type": "object", "properties": {"eni_id": _p("string", "ENI ID")}, "required": ["eni_id"]}},
             {"name": "list_vpcs", "description": "List VPCs", "inputSchema": {"type": "object", "properties": {}}},
             {"name": "get_vpc_network_details", "description": "Full VPC config", "inputSchema": {"type": "object", "properties": {"vpc_id": _p("string", "VPC ID")}, "required": ["vpc_id"]}},
-            {"name": "get_vpc_flow_logs", "description": "VPC flow logs", "inputSchema": {"type": "object", "properties": {"vpc_id": _p("string", "VPC ID")}, "required": ["vpc_id"]}},
+            {"name": "get_vpc_flow_logs", "description": "Read VPC flow-log configuration and bounded traffic samples when available. A traffic sample proves only observed network traffic in its window, not a successful DB session/query; absent samples are unknown, not proof of no dependency", "inputSchema": {"type": "object", "properties": {"vpc_id": _p("string", "VPC ID")}, "required": ["vpc_id"]}},
             {"name": "describe_network", "description": "Describe SG/NACL/RT/Subnet/VPC", "inputSchema": {"type": "object", "properties": {"resource_type": _p("string", "Type")}, "required": ["resource_type"]}},
             {"name": "list_transit_gateways", "description": "List TGWs", "inputSchema": {"type": "object", "properties": {}}},
             {"name": "get_tgw_details", "description": "TGW details", "inputSchema": {"type": "object", "properties": {"tgw_id": _p("string", "TGW ID")}, "required": ["tgw_id"]}},
@@ -251,7 +251,7 @@ TARGETS = {
         "lambda_key": "finops-mcp",
         "description": "FinOps Optimization - Compute Optimizer, RI/SP Recommendations, Cost Optimization Hub, Trusted Advisor (5 tools)",
         "tools": [
-            {"name": "get_rightsizing_recommendations", "description": "EC2/RDS/ECS/Lambda rightsizing recommendations from Compute Optimizer",
+            {"name": "get_rightsizing_recommendations", "description": "Read-only EC2/RDS/ECS/Lambda sizing proposals from Compute Optimizer. EC2/RDS include generation time, lookback, provider rank, performance risk and bounded utilization/missing-metric evidence. Unknown risk/memory/I/O or inadequate lookback prevents a definitive safe downsize; retain currency and verify dependencies/HA/protection before any manual proposal",
              "inputSchema": {"type": "object", "properties": {"resource_type": _p("string", "all, ec2, rds, ecs, or lambda")}}},
             {"name": "get_savings_plans_recommendations", "description": "Savings Plans purchase recommendations from Cost Explorer",
              "inputSchema": {"type": "object", "properties": {
@@ -282,8 +282,24 @@ TARGETS = {
         "lambda_key": "cloudwatch-mcp",
         "description": "CloudWatch metrics, alarms, logs, Log Insights (11 tools)",
         "tools": [
-            {"name": "get_metric_data", "description": "Get metric data", "inputSchema": {"type": "object", "properties": {"namespace": _p("string", "Namespace"), "metric_name": _p("string", "Metric")}, "required": ["namespace", "metric_name"]}},
-            {"name": "get_metric_metadata", "description": "Metric metadata", "inputSchema": {"type": "object", "properties": {"namespace": _p("string", "Namespace")}, "required": ["namespace"]}},
+            {"name": "get_metric_data", "description": "Read scoped CloudWatch metrics for 1 minute to 14 days. Returns the latest 30 points and discloses truncation; use a period yielding at most 1440 points. A truncated recent sample does not establish full-window sizing coverage",
+             "inputSchema": {"type": "object", "properties": {
+                 "namespace": _p("string", "Verified namespace"),
+                 "metric_name": _p("string", "Verified metric name"),
+                 # AgentCore SchemaDefinition carries only type/description/properties/required/items;
+                 # bounds live in descriptions here and are enforced server-side by _metric_request.
+                 "dimensions": {"type": "object", "description": "Exact dimensions, e.g. InstanceId or DBInstanceIdentifier; at most 30 string values of 1-1024 characters"},
+                 "statistic": _p("string", "One of Average, Minimum, Maximum, Sum, SampleCount, p50, p90, p95, p99"),
+                 "minutes": _p("integer", "Window in minutes, 1 to 20160 (14 days)"),
+                 "period": _p("integer", "Seconds; positive multiple of 60 and at most 1440 points per request"),
+                 "unit": _p("string", "Optional CloudWatch standard unit, e.g. Percent, Count, Bytes, Seconds, Bytes/Second or None"),
+             }, "required": ["namespace", "metric_name"]}},
+            {"name": "get_metric_metadata", "description": "Discover bounded CloudWatch metric metadata by namespace and optional metric/dimensions; omitted metric_name performs namespace-only discovery",
+             "inputSchema": {"type": "object", "properties": {
+                 "namespace": _p("string", "Verified namespace"),
+                 "metric_name": _p("string", "Optional exact metric name"),
+                 "dimensions": {"type": "object", "description": "Optional exact dimension filters; at most 30 string values of 1-1024 characters"},
+             }, "required": ["namespace"]}},
             {"name": "analyze_metric", "description": "Analyze trend", "inputSchema": {"type": "object", "properties": {"namespace": _p("string", "Namespace"), "metric_name": _p("string", "Metric")}, "required": ["namespace", "metric_name"]}},
             {"name": "get_recommended_metric_alarms", "description": "Alarm recommendations", "inputSchema": {"type": "object", "properties": {"metric_name": _p("string", "Metric")}, "required": ["metric_name"]}},
             {"name": "get_active_alarms", "description": "Active alarms", "inputSchema": {"type": "object", "properties": {}}},
@@ -406,8 +422,8 @@ TARGETS = {
         "description": "Loki read-only — LogQL range/instant query, labels, label values (4 tools)",
         "tools": [
             {"name": "loki_schema", "description": "Introspect label names (cached)", "inputSchema": {"type": "object", "properties": {}}},
-            {"name": "loki_query_range", "description": "Range LogQL query over a time window (logs/metrics)", "inputSchema": {"type": "object", "properties": {"query": _p("string", "LogQL"), "start": _p("string", "1h/30m or unix/ISO (default now-1h)"), "end": _p("string", "unix/ISO (default now)"), "limit": _p("string", "Max entries (default 100)"), "direction": _p("string", "forward|backward (default backward)")}, "required": ["query"]}},
-            {"name": "loki_query", "description": "Instant LogQL query", "inputSchema": {"type": "object", "properties": {"query": _p("string", "LogQL"), "time": _p("string", "Eval time unix/ISO (default now)"), "limit": _p("string", "Max entries (default 100)")}, "required": ["query"]}},
+            {"name": "loki_query_range", "description": "Range LogQL query over a time window (logs/metrics); collectionStatus ok/empty denotes complete results; partial/unknown/error or truncated output must not support an absence claim. Reaching the requested limit sets limitSaturated and is partial.", "inputSchema": {"type": "object", "properties": {"query": _p("string", "LogQL"), "start": _p("string", "1h/30m or unix/ISO (default now-1h)"), "end": _p("string", "unix/ISO (default now)"), "limit": _p("string", "Max entries (default 100)"), "direction": _p("string", "forward|backward (default backward)")}, "required": ["query"]}},
+            {"name": "loki_query", "description": "Instant LogQL query; collectionStatus ok/empty denotes complete results; partial/unknown/error or truncated output must not support an absence claim. Reaching the requested limit sets limitSaturated and is partial.", "inputSchema": {"type": "object", "properties": {"query": _p("string", "LogQL"), "time": _p("string", "Eval time unix/ISO (default now)"), "limit": _p("string", "Max entries (default 100)")}, "required": ["query"]}},
             {"name": "loki_labels", "description": "List label names", "inputSchema": {"type": "object", "properties": {}}},
             {"name": "loki_label_values", "description": "List values of a label", "inputSchema": {"type": "object", "properties": {"label": _p("string", "Label name")}, "required": ["label"]}},
         ],

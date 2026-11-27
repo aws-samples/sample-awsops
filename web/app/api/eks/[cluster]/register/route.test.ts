@@ -96,6 +96,34 @@ describe('scoped EKS registration', () => {
     },
   );
 
+  it('logs registrations and unregistrations as single audit events', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      const { POST, DELETE } = await import('./route');
+      expect((await POST(request(MEMBER_ID), params(MEMBER_ID))).status).toBe(200);
+      expect((await DELETE(request(MEMBER_ID, '', 'DELETE'), params(MEMBER_ID))).status).toBe(200);
+      const events = info.mock.calls.map(([line]) => JSON.parse(String(line)));
+      expect(events).toEqual([
+        { event: 'eks_cluster_registered', cluster: MEMBER_ID, actor_sub: 'admin-sub', mode: 'access-entry' },
+        { event: 'eks_cluster_unregistered', cluster: MEMBER_ID, actor_sub: 'admin-sub' },
+      ]);
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  it('ignores a legacy {auto:true} body: same checks, no auto trigger in the audit line', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      const { POST } = await import('./route');
+      expect((await POST(request(MEMBER_ID, '', 'POST', { auto: true }), params(MEMBER_ID))).status).toBe(200);
+      const events = info.mock.calls.map(([line]) => JSON.parse(String(line)));
+      expect(events).toEqual([{ event: 'eks_cluster_registered', cluster: MEMBER_ID, actor_sub: 'admin-sub', mode: 'access-entry' }]);
+    } finally {
+      info.mockRestore();
+    }
+  });
+
   it('registers a host cluster beyond the discovery list cap under the legacy bare key', async () => {
     const { POST } = await import('./route');
     expect((await POST(request(HOST_ARN), params(HOST_ARN))).status).toBe(200);
@@ -214,6 +242,20 @@ describe('scoped EKS registration', () => {
     expect(result.status).toBe(200);
     expect(await result.json()).toEqual({ registered: true, authMode: 'sa-token' });
     expect(rows.get(MEMBER_ID)).toEqual({ mode: 'sa-token', token: 'private-member-token' });
+  });
+
+  it('audits credential-backed registration by mode without logging the credential', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      const { POST } = await import('./route');
+      await POST(request(MEMBER_ID, '', 'POST', { auth: { mode: 'sa-token', token: 'private-member-token' } }), params(MEMBER_ID));
+      const lines = info.mock.calls.map(([line]) => String(line));
+      expect(lines.map((l) => JSON.parse(l))).toEqual([
+        { event: 'eks_cluster_registered', cluster: MEMBER_ID, actor_sub: 'admin-sub', mode: 'sa-token' }]);
+      expect(lines.join('')).not.toContain('private-member-token');
+    } finally {
+      info.mockRestore();
+    }
   });
 
   it.each(['scope', 'write'])('returns 503 for %s registry failure', async boundary => {

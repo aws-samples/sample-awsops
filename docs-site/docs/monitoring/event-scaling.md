@@ -1,14 +1,14 @@
 ---
 sidebar_position: 10
 title: 이벤트 사전 스케일링
-description: ADR-010 Phase 1+2 — 트래픽 이벤트 등록, 과거 메트릭 분석, AI 기반 워밍업 스크립트 생성
+description: 트래픽 이벤트 등록, 과거 메트릭 분석, AI 기반 워밍업 스크립트 생성
 ---
 
 import Screenshot from '@site/src/components/Screenshot';
 
 # 이벤트 사전 스케일링 (Event Pre-Scaling)
 
-`/event-scaling` 페이지는 다가오는 트래픽 이벤트(블랙프라이데이, 티켓 오픈, 라이브 방송 등)에 대비한 **AI 기반 사전 워밍업 계획**을 생성합니다. ADR-010 Phase 1+2 구현이며, **계획 생성 + 스크립트 내보내기까지만** 수행하고 **실행은 운영자가 직접 수동 검토 후 실행**합니다.
+`/event-scaling` 페이지는 다가오는 트래픽 이벤트(블랙프라이데이, 티켓 오픈, 라이브 방송 등)에 대비한 **AI 기반 사전 워밍업 계획**을 생성합니다. **계획 생성 + 스크립트 내보내기까지만** 수행하고 **실행은 운영자가 직접 수동 검토 후 실행**합니다.
 
 <Screenshot src="/screenshots/overview/event-scaling.png" alt="이벤트 사전 스케일링 페이지" />
 
@@ -24,7 +24,7 @@ import Screenshot from '@site/src/components/Screenshot';
 | **지원 리소스** | KEDA, HPA, Aurora replica/ACU, MSK broker/partition, ASG, EC2, EBS IOPS, ALB |
 
 :::caution Phase 2 한계
-생성된 스크립트는 **사람의 검토용**입니다. AWSops는 인프라 변경(KEDA 배포, AWS API 호출)을 직접 실행하지 않습니다. 자동 실행 + IAM 확장 + KEDA 통합은 ADR-029 Phase 3 게이트(Proposed)에서 별도로 다룹니다.
+생성된 스크립트는 **사람의 검토용**입니다. AWSops는 인프라 변경(KEDA 배포, AWS API 호출)을 직접 실행하지 않습니다. 자동 실행·IAM 권한 확장·KEDA 통합은 승인되지 않은 제안 단계이며, 별도 게이트 뒤에서 비활성 상태로 유지됩니다.
 :::
 
 ## 워크플로우
@@ -150,8 +150,6 @@ curl -X DELETE '/awsops/api/event-scaling?id=<eventId>'
 
 ## 참고
 
-- **ADR-010 Phase 1+2** — 이벤트 등록 + AI 플랜 생성 (현재 구현)
-- **ADR-029** — Phase 3 mutating action 게이트 (Proposed)
 - `src/lib/event-scaling.ts` — 데이터 모델 + JSON 영속화
 - `src/lib/event-scaling-prompts.ts` — Bedrock 프롬프트 + `PLAN_JSON` 마커 파싱
 - `src/lib/event-scaling-scripts.ts` — 자원별 안전한 bash 스크립트 생성

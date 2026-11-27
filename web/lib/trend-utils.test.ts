@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { nearestSnapshot, netChange, typeCovEqual, covComplete, covCompleteForScope, expectedAccounts, isDerivedTrendType, sameAccountSet } from './trend-utils';
+import { nearestSnapshot, netChange, typeCovEqual, covComplete, covCompleteForScope, expectedAccounts, isDerivedTrendType, sameAccountSet, trendLegendGroups } from './trend-utils';
 
 const day = (offset: number) => new Date(Date.now() - offset * 86_400_000).toISOString().slice(0, 10);
 
@@ -184,5 +184,34 @@ describe('sameAccountSet (round 5 — cross-fetch scope consistency)', () => {
     // the impact fetch fell back to self while the chart resolved the full scope → NOT same
     expect(sameAccountSet(['self'], ['self', '222233334444'])).toBe(false);
     expect(sameAccountSet([], [])).toBe(true);
+  });
+});
+
+describe('fleet totals exclude attachment-only types', () => {
+  it('does not count ENIs or derived series toward the fleet total', async () => {
+    const { countsTowardFleetTotal } = await import('./trend-utils');
+    expect(countsTowardFleetTotal('ec2')).toBe(true);
+    expect(countsTowardFleetTotal('rds_cluster')).toBe(true);
+    expect(countsTowardFleetTotal('eni')).toBe(false);
+    expect(countsTowardFleetTotal('public_s3_buckets')).toBe(false);
+  });
+});
+
+describe('trendLegendGroups', () => {
+  const derived = 'open_security_groups';
+  it('puts every charted series in exactly one group, with ENIs in Other on a small fleet', () => {
+    expect(isDerivedTrendType(derived)).toBe(true);
+    const g = trendLegendGroups(['ec2', 'lambda', 's3', 'subnet', 'eni', derived]);
+    expect(g.coreTypes).toEqual(['ec2', 'lambda', 's3', 'subnet']);
+    expect(g.otherTypes).toEqual(['eni']);
+    expect(g.derivedTrendTypes).toEqual([derived]);
+    expect([...g.coreTypes, ...g.otherTypes, ...g.derivedTrendTypes].sort()).toEqual([...g.trendTypes].sort());
+  });
+  it('keeps ENIs reachable after the top 8 fleet-counted types', () => {
+    const counted = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'];
+    const g = trendLegendGroups([...counted, 'eni']);
+    expect(g.coreTypes).toEqual(['a', 'b', 'c', 'd', 'e']);
+    expect(g.otherTypes).toEqual(['f', 'g', 'h', 'eni']);
+    expect(g.trendTypes).not.toContain('i');
   });
 });

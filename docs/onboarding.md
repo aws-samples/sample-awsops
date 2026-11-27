@@ -8,8 +8,8 @@
 ## 사전 요구사항 / Prerequisites
 | 도구 | 버전/조건 | 비고 |
 |------|-----------|------|
-| terraform | **>= 1.15** | S3 native state locking(`use_lockfile`) 필요 — DynamoDB 없음 |
-| node | **>= 18** (configurator TUI 기준) | web 컨테이너는 `node:20-alpine` |
+| terraform | **>= 1.17.1** (`scripts/v2/terraform-test.sh`는 정확히 1.17.1) | S3 native state locking(`use_lockfile`) 필요 — DynamoDB 없음 |
+| node | **26.13.x** (`package.json` engines `>=26.13.0 <27`) | web 컨테이너는 `node:26.13.0-alpine` |
 | aws CLI | 대상 계정 자격증명 구성 | `AWS_REGION` 기본값 `ap-northeast-2` |
 | docker + buildx | **arm64 크로스빌드 필수** (`--platform linux/arm64`) | `deploy.mjs`는 기본 `sudo docker` 사용 — `DOCKER` env로 오버라이드 가능 |
 
@@ -70,5 +70,5 @@ freshness. Main/preview keep `make migrate` and advisory compatibility smoke, wi
 - `CLAUDE.md`(루트) — 필수 규칙·알려진 함정 (SG description 불변, HOSTNAME=0.0.0.0, ENTRYPOINT 금지 등)
 - `DESIGN.md` — v2 설계
 - `docs/reference/01-edge-network.md` ~ `07-eks.md` — 레이어별 구현 레퍼런스
-- `docs/runbooks/deploy-new-version.md` — 릴리스 배포 런북
+- `docs/runbooks/web-release.md` — 웹 릴리스 순서와 복구 런북
 - 결정(ADR) 본문과 BASELINE 레지스터는 비공개 upstream 리포지토리에서 관리됩니다 (이 트리에는 없음 — 문서의 ADR 번호는 추적용 인용)

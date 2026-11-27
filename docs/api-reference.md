@@ -60,7 +60,7 @@ without a manually held transaction. PostgreSQL supplies one MVCC snapshot for t
 statement; `statement-snapshot` describes this guarantee, not a requested transaction
 isolation level. Parameters and scope filters are unchanged. `view=agg` remains separate.
 
-Topology reads target groups/ECS tasks/subnets in at most 20 pages of 500 under one
+Topology reads target groups/ECS tasks/subnets/network interfaces in at most 20 pages of 500 under one
 30-second browser load budget shared with EKS. All inventory and VPC/security-group
 enrichment requests share two lanes per load; critical pages run sequentially within a
 lane. This bounds this loader’s fan-out against the shared pool. Each critical page must carry the marker;
@@ -91,13 +91,15 @@ Source: [inventory route](../web/app/api/inventory/[type]/route.ts),
 [EKS evidence producer](../web/lib/topology-config.ts), and
 [IP-target builder](../web/lib/flow-topology.ts).
 
-## eks (10)
+## eks (12)
 | Path | Method | Behavior | Authentication |
 |------|--------|----------|----------------|
-| `/api/eks` | GET | Account/region-scoped discovery, canonical cluster IDs, access state, and onboarding guidance; partial errors and enumeration limits are disclosed | verifyUser |
-| `/api/eks/fleet` | GET | Scoped registered-cluster aggregates without raw pod rows; cluster read failure returns `reachable:false`; unavailable scope/registration storage returns 503 | verifyUser |
+| `/api/eks` | GET | Account/region-scoped discovery, canonical cluster IDs, access state, and onboarding guidance; never writes; for an administrator, an unregistered member cluster with a verified Access Entry is flagged `accessEntryVerified: true` so the admin page can offer one-click registration (the ordinary register POST, sent only when the admin clicks); partial errors and enumeration limits are disclosed | verifyUser |
+| `/api/eks/fleet` | GET | Scoped registered-cluster aggregates without raw pod rows; cluster read failure returns `reachable:false`; a node-only read failure keeps the cluster reachable with `nodesReason`/`nodesError`, and `nodesSource: "aws-api"` marks member EC2/node-group rows; unavailable scope/registration storage returns 503 | verifyUser |
 | `/api/eks/node-eni` | GET | `node` DNS lookup in EC2 inventory and traffic metrics; optional `cluster` selects its registered account/region; node-only requests retain host/deployment-region behavior | verifyUser |
-| `/api/eks/summary` | GET | Scoped registered-cluster counts and `reachable` count; failed cluster reads are omitted from totals; scope/registration failure returns 503; `truncated` discloses the fleet cap | verifyUser |
+| `/api/eks/registrations` | GET | Every registered cluster id (registry plus env-configured clusters, including clusters of disabled accounts) as `{ clusters: [{ id, name, accountId, region }], truncated: false }` (the registry read has no row cap; a registry id that does not parse is dropped and the response is instead `{ clusters, truncated: true, unparsed: <count> }` with the parseable clusters and no dropped id text; a client treats `truncated: true` or `status: "error"` as incomplete), a bare id parsed as a host cluster in the deployment region (`accountId` is the numeric host id, or `self` without `HOST_ACCOUNT_ID`); used only for the client's trace-join name uniqueness; no AWS call; an unavailable registry returns 503; `no-store` | verifyUser |
+| `/api/eks/summary` | GET | Scoped registered-cluster counts and `reachable` count; failed cluster reads are omitted from totals; a node-only failure keeps the cluster counted and reports `nodesUnavailable`; scope/registration failure returns 503; `truncated` discloses the fleet cap | verifyUser |
+| `/api/eks/[cluster]/db-refs` | GET | Managed-database hostnames extracted server-side from Pod env and ConfigMaps, matched to inventory endpoints; returns workload, `via`, host, kind, matched resource and referenced Secret names only (no values), with `truncated`/`partial` flags for the Kubernetes read and `inventoryCapped`/`inventoryIncomplete` flags for the inventory match (a type without one stable succeeded sync snapshot, or cut off by the page cap, has its matches withheld); only `account`/`region` query parameters accepted; `no-store` | verifyUser |
 | `/api/eks/[cluster]/incluster` | GET | Read-only Kubernetes resources selected by `kind`; canonical registration allowlist applies | verifyUser |
 | `/api/eks/[cluster]/incluster/describe` | GET | One Kubernetes object; secrets remain unsupported and config-map values are redacted | verifyUser |
 | `/api/eks/[cluster]/k8sgpt` | GET | Flag-gated read-only diagnosis (ADR-006); admin and cluster allowlist checks remain | verifyUser |
@@ -175,9 +177,10 @@ reported through `authMode`, so clients must not infer that an omitted mode was 
 
 For member clusters, discovery and default Kubernetes token signing use the
 registered member read-only role. Its Access Entry/read policy is required.
-The shared role uses `AmazonEKSViewPolicy` plus minimal node-read RBAC; do not
-grant it AdminView/Secret reads. Optional Result-CRD and OpenCost service-proxy
-reads need separately scoped bindings.
+The shared role uses an Access Entry with `AmazonEKSViewPolicy` only (no RBAC step);
+do not grant it AdminView/Secret reads. A member `nodes` 403 returns EC2/node-group rows
+(`source: "aws-api"`) built from read-only EC2/EKS APIs with the same role. Optional
+Result-CRD and OpenCost service-proxy reads need separately scoped bindings.
 Host clusters retain the web task role. Explicit member AssumeRole overrides must
 belong to the selected member account; the host bearer is never a member fallback.
 Saved SA authentication remains separate. See [EKS onboarding](reference/07-eks.md).
@@ -270,10 +273,24 @@ The opt-in `/topology?view=e2e` view uses the pure `web/lib/e2e-topology.ts` mod
 | `/api/dns-logs` | GET | Resolver query-log 설정 상태(메뉴 게이트) — 미설정/무권한도 200 + 빈 configs | verifyUser |
 | `/api/dns-logs/analytics` | GET | Resolver 로그 집계 분석 (Logs Insights 병렬 폴링, `maxDuration` 60s, group은 라이브 allowlist 검증) | verifyUser |
 
-## sg (1)
+## sg (4)
 | 경로 | 메서드 | 역할 | 인증 |
 |------|--------|------|------|
 | `/api/sg` | GET | Security Group 사용 분석(ENI 부착+상호참조 미사용 감지, 룰 소스/목적지 식별). `?regions=`로 리전 스코핑(안 주면 인벤토리 전 리전). `?view=hits&id=sg-...` 트래픽 히트 매칭 — Flow Logs 우선(ACCEPT만 룰 귀속), NFM 폴백은 **상대 식별 전용**(양방향 집계라 룰 귀속 불가, hits=null) | verifyUser |
+| `/api/sg/rules` | GET | Filtered, paginated SG-rule inventory and activity from Aurora. Filters are bound parameters (`web/lib/sg-rules.ts`), never SQL fragments | verifyUser |
+| `/api/sg/rules/refresh` | POST | Manual refresh — enqueues the same `sg_rule_scan` job the daily dispatcher uses via `enqueueJob` (not the generic `/api/jobs`, ADR-009). 503 when workers are disabled | verifyUser + isAdmin |
+| `/api/sg/flow-sources` | GET, PUT | Flow Log Athena source configuration (ADR-019). GET for any user; PUT validates workgroup/database/table against allowlist regexes, and the live existence check runs in the isolated Athena broker Lambda | verifyUser (+ isAdmin on PUT) |
+
+
+## network-paths / network-path-runs (4)
+All routes return 503 unless `NETWORK_PATH_CHECK_ENABLED=true` (`web/lib/network-path-gate.ts`).
+
+| Path | Method | Role | Auth |
+|------|--------|------|------|
+| `/api/network-paths` | GET, POST | List saved network-path checks / create one (`created_by_sub` = caller) | verifyUser |
+| `/api/network-paths/[id]` | GET, PATCH, DELETE | Read a check; edit or soft-delete it (creator or admin only, otherwise 403) | verifyUser |
+| `/api/network-paths/[id]/runs` | GET, POST | Run history (most recent first, max 50; kept after soft delete) / start a run, which enqueues the `network_path` job directly (ADR-009). New runs are also refused by `networkPathLiveTopologyCapabilityGate` until live topology re-reads are available | verifyUser |
+| `/api/network-path-runs/[runId]` | GET | Run status and phase; once concluded, `overall_status`, candidates, steps and the validation bundle | verifyUser |
 
 ## anfw (1)
 | 경로 | 메서드 | 역할 | 인증 |
@@ -299,6 +316,19 @@ The opt-in `/topology?view=e2e` view uses the pure `web/lib/e2e-topology.ts` mod
 | 경로 | 메서드 | 역할 | 인증 |
 |------|--------|------|------|
 | `/api/vpce` | GET | VPC Endpoint 목록+분석 — 인벤토리 VPC 리전 fan-out + PrivateLink 메트릭 기반 미사용 감지 | verifyUser |
+
+## topology (2)
+
+| Path | Method | Role | Auth |
+|------|--------|------|------|
+| `/api/topology` | GET | Published host service snapshot with bounded service, entry, placement and evidence lenses. Select a returned entity with `focus`, filter by `q` and pin `snapshot` when following `nextCursor`. Returns 404 when `topology_entities_enabled` is disabled, 422 for unsupported scopes, or 410 for an expired snapshot. | `verifyUser` |
+| `/api/topology/site-routes` | GET | Trace route templates (`http.route`) per traced service with the downstream service/route each one calls, for the site flow. Reads every registered ClickHouse trace datasource (registry catalog template, never request input), at most 4 at a time, each within what is left of a 10 s budget; an `ok`/`partial` per-source result is reused for 60 s (single-flight per source, template and window, at most 64 retained and 8 loading at once; a source past the loading cap reports `query_failed`), while `unavailable` results and failures are not. A read that reaches its row limit (`capped`) or comes back truncated drops its last, possibly cut hop; hops whose route or downstream route has an id-like segment are dropped (`route_raw_path`). Only route templates, service names and distinct-trace counts are returned as exactly `{ status, reasons, routes }`; a hop reported by several sources keeps its largest count, adds `multi_source_counts` and reports `partial`. A source that is `partial` keeps its routes; `unavailable` means no source returned routes. Optional `windowMins` is 15, 60 (default) or 180; any other parameter or value returns 400. No registered source returns `unavailable` with `no_trace_source`. Returns 404 when `topology_entities_enabled` is disabled and 503 when the registry read fails, is busy or exceeds its 2 s timed read-only transaction (`timeout`). | `verifyUser` |
+
+## network-topology (1)
+
+| Path | Method | Role | Auth |
+|------|--------|------|------|
+| `/api/network-topology` | GET | Configuration-only, cross-account network topology projected from central inventory. Optional `accounts` (`__all__` default, or comma-separated `self`/12-digit IDs) scopes the fleet view; optional `vpcs` (at most 4 `<account>/<region>/<vpc-id>` keys) switches to the detail view. One bounded statement reads fleet rows (VPC, TGW, TGW attachments, VPC peering; 20,000-row cap) and detail rows for the selected VPCs (8,000-row cap); overflow sets `truncated`. Cross-account links resolve by attachment or peering ID, never by CIDR; conflicting duplicates and non-active links are counted in `omitted`. Out-of-scope peers are `external` stubs. Edges are configured attachments/peerings, not reachability. Repeated or malformed scope parameters return `400 invalid_request`; read failures return `503 network_topology_unavailable`. All replies use `Cache-Control: private, no-store`. | `verifyUser` |
 
 ## vpc-connectivity (1)
 
@@ -367,7 +397,7 @@ reachability.
 | `/api/customization` | GET, POST, PUT | Admin skill/agent catalog CRUD; invalid tool policy → 400; unavailable validation/read → 503 (see below) | verifyUser |
 | `/api/datasources` | GET | 데이터소스 인스턴스 목록 — 크리덴셜 미노출 | verifyUser |
 | `/api/datasources/generate` | POST | 자연어 → 쿼리 초안 생성 (리뷰용 — 절대 실행 안 함) | verifyUser |
-| `/api/datasources/manage` | POST, PATCH | 인스턴스 생성/수정 + 크리덴셜 저장 (admin); `settings`(timeoutS 1–60[clickhouse 유효 최대 55]·clickhouse database)는 서버 측 sanitize 후 ds_settings JSONB에 저장 | verifyUser |
+| `/api/datasources/manage` | POST, PATCH | 인스턴스 생성/수정 + 크리덴셜 저장 (admin); `settings`(timeoutS 1–60[모든 kind 유효 최대 55 — Prometheus/Mimir/ClickHouse는 서버 실행 제한(Explore의 Prometheus/Mimir는 10초 상한), 그 외는 HTTP 응답 제한]·clickhouse database)는 서버 측 sanitize 후 ds_settings JSONB에 저장 | verifyUser |
 | `/api/datasources/query` | POST | 인스턴스 대상 read-only 쿼리 실행 (admin 아님 — 탐색용) | verifyUser |
 | `/api/datasources/test` | POST | 저장 전 연결 probe — SSRF 가드 (admin) | verifyUser |
 | `/api/datasources/[id]` | DELETE | 인스턴스 삭제 — 스키마 캐시/크리덴셜 cascade, 기본값 재선정 (admin) | verifyUser |
@@ -387,7 +417,7 @@ reachability.
 | `/api/health` | GET | 헬스체크 — 컨테이너/타깃그룹 health 경로와 일치 필수 | 없음 (공개) |
 | `/api/incidents` | GET, POST | 인시던트 목록 + 수동 트리거 (ADR-006[legacy 032], admin) | verifyUser |
 | `/api/incidents/prevention` | GET | 교차 인시던트 예방 인사이트 (admin, read-only) — Aurora 미설정/실패도 200 + 빈 목록 | verifyUser |
-| `/api/incidents/webhook` | POST | 인시던트 ingress — HMAC 서명 웹훅 (ADR-022 active/standby 로테이션) | 없음 (HMAC 검증) |
+| `/api/incidents/webhook` | POST | 인시던트 ingress — HMAC 서명 웹훅 (ADR-013[legacy 022] active/standby 로테이션) | 없음 (HMAC 검증) |
 | `/api/incidents/[id]` | GET | 인시던트 상세 (admin, read-only, UUID 가드) | verifyUser |
 | `/api/insights` | GET | Overview용 최신 캐시 AI 인사이트 (DB read only) | verifyUser |
 | `/api/insights/refresh` | POST | AI 인사이트 재생성 enqueue (admin) — 플래그 off 시 fail-closed, 중복 job dedup | verifyUser |
@@ -408,7 +438,7 @@ reachability.
 | `/api/overview` | GET | App-level jobs/compliance plus singleton EKS/cost reads; `clusterScope` records actual EKS account/region, names, and truncation for safe consumer comparisons | verifyUser |
 | `/api/security` | GET | 보안 findings (`inventory_resources` 파생, read-only) + ECR 이미지 스캔 CVE(라이브, 실패 시 빈 탭) — `accounts` 파라미터 해석(`__all__` 포함) | verifyUser |
 | `/api/security/refresh` | POST | 보안 관련 인벤토리 타입 재동기화 | verifyUser |
-| `/api/stream` | GET | SSE 스트림 | 없음 |
+| `/api/stream` | GET | SSE 스트림 | verifyUser |
 
 
 ## Chat custom-policy availability
@@ -490,6 +520,17 @@ Missing collection metadata stays unknown rather than implying collector failure
 
 ## Graph collection metadata
 
+Focused `GET /api/graph?from=<node-id>` responses include `selection.status`
+(`resolved`, `not_found`, or `ambiguous`) and the requested ID. A resolved result
+includes `resolved_id` and `account_id`; ambiguity returns no graph and at most
+two `candidate_ids`, with `candidates_truncated` disclosing further matches.
+Placement IDs use `<kind>:@<account>:<region>:<resource-id>` when region is known,
+and account-union IDs wrap saved IDs as `@<account>/<saved-node-id>`.
+Unwrapped exact and legacy-alias matches are considered together, including
+retained publications. Candidate IDs always wrap the saved ID with its account.
+Wrapped input selects an exact saved row first and uses aliases only when that
+row is absent. See the [graph read contract](runbooks/graph-read-contract.md).
+
 `GET /api/graph` returns `collection` for flow, infra and trace. Older responses without it remain compatible as unknown evidence. The shared TypeScript
 contract is `GraphCollection` / `GraphCollectionSource` in
 `web/components/topology/GraphCollectionStatus.tsx`; the renderer also validates unknown
@@ -511,6 +552,86 @@ runtime payloads for compatibility with older or malformed responses.
 | `evidenceKind`, `inputTruncated`, `graphTruncated` | Evidence kind is derived from graph class; `inventory` changes empty-result wording. Producer truncation remains separate from API read truncation. |
 | `readStatus`, `readReason`, `readTruncated` | API read availability/coverage, independent of collector status: `ok`, `partial` (`row_limit`), or `unavailable` (`busy`/`timeout`/`query_failed`). |
 | `sources[].scope/capturedAtMs/lastSuccessAtMs`, `publishedSources[]` | Current/saved source status, scope and reasons, plus optional capture/sweep clocks and saved provenance. Missing status is explicitly unknown; absent clocks are not fabricated. |
+
+### Trace graph sources
+
+A ClickHouse datasource whose registry query is the catalog's exporter-schema `otel_v1` template
+(exactly the bare exporter columns; generated or aliased templates are excluded), or the
+unregistered default, is read as whole-window aggregates of the same table, not as the newest
+spans. Two bounded read-only queries return service/kind/status attribute groups with span counts
+and parent→child service pairs; a third returns span-link pairs when the table has `Links`
+columns. Each is limited to 1,000 rows and to the connector's execution budget. If an aggregate
+query fails (for example the join exceeds that budget), the same table is read with the bounded
+newest-span reader instead and the source is `partial` with `incomplete_collection`. A malformed
+response envelope fails the read; malformed individual rows are skipped as `malformed_rows`, a
+saturated limit adds `cap_reached`, rows outside the window add `incomplete_collection`, and an
+unproven empty result adds `empty_not_confirmed` (a partial read that may publish nodes without
+edges). Without those reasons, node and edge `spanCount` count the window's spans, and
+source-counted pairs produce no `orphanSpans`. A child whose parent started before the window is
+not counted as a pair and is not disclosed. Grouping keeps only EC2 instance IDs and ARNs from the
+instance claim attributes, plus a fixed marker for any other `cloud.resource_id` (which still
+vetoes binding). Generated or custom templates, Tempo and other sources keep span sampling, and a
+graph mixing them sums both kinds of count.
+
+Publication keeps at most 200 nodes and 500 edges (`nodeDrops`/`edgeDrops`). Nodes are selected
+from the heaviest edges first, both endpoints together. A kept database, queue, workload,
+runtime or model relationship keeps its caller; a `hosts` relationship keeps both its runtime
+and reporting service. Remaining capacity goes to other nodes by span and metric volume.
+
+Service-graph metrics contribute service→service `calls` only. Rows whose Tempo
+`connection_type` is `database`, `messaging_system` or `virtual_node` name a database, queue or
+uninstrumented peer rather than a service and are not drawn; databases and queues come from trace
+spans with their host-qualified identity.
+
+### Trace inference claims
+
+The trace graph can also return `runtime` and `model` nodes from explicit span
+attributes. A client span with a valid AgentCore runtime ARN produces a `calls`
+relationship to that runtime. A reporting service with a matching runtime resource
+ARN and non-conflicting account/region produces `runtime → service` with `rel=hosts`.
+That relationship is reported execution context, not a traced request. An explicit
+provider and requested model on a client span produces a requested-model `calls`
+relationship; a valid runtime invocation does not also invent a direct model call.
+
+Runtime claims join only by exact ARN within source/environment. Model claims
+retain source/account/region/environment/cluster/namespace/port isolation; an
+unknown endpoint is also caller-local. Provider names are normalized to lowercase.
+Neither relationship proves successful inference or the final provider behind a
+Gateway, and capped publications still disclose partial coverage.
+
+HTTP, MCP and the current SQL-reader view force
+`identityProvenance=telemetry_claim` for these kinds, including retained rows.
+Only bounded typed `sourceId`, `environment`, runtime `arn`, or model
+`provider`/`model`/`endpoint` and a valid numeric `port` survive. Runtime
+`claimedAccountId`/`claimedRegion` are derived from a valid ARN; models and invalid
+runtime ARNs have null qualifiers. Stored ownership/provenance, `infra_ref`, raw
+provider blobs and prompt/response content are excluded.
+
+The SQL-reader projection requires the standalone migration described in the
+[inference projection runbook](runbooks/agent-sql-reader.md#trace-inference-projection).
+Until that migration is applied, the agent may have the node kind/label but lack
+its identity fields. A source merge is not deployment proof.
+
+### Trace edge instance observations
+
+Trace `queries` edges (service → `db`) may carry three additive, optional `meta` fields built by
+`web/lib/trace-graph.ts`. Older rows and responses without them remain compatible; absence means
+no bound observation was recorded, not that no instance queried the database.
+
+| Field | Meaning |
+|---|---|
+| `instance_observations[]` | Distinct (`instance_ref`, `database_ref`) pairs from outbound `CLIENT` spans only. Each entry carries `instance_id`, `instance_ref`, `database_ref`, `account`, `region`, `db_host`, `observed_at_ms` (latest span start), `first_observed_at_ms`, `observation_count`, an opaque `correlation_id` naming the latest span, optional `source_id`, and `provenance: "trace_span"`. At most 200 pairs per edge. |
+| `instance_observations_omitted` | Count of further distinct pairs dropped by the 200-pair cap. |
+| `instance_observations_unbound` | Count of spans whose EC2 claim could not be bound: missing or invalid account/region/clock, or no unique inventory EC2 instance and RDS instance endpoint in the same account and region. |
+
+For aggregate sources, `observation_count` and `instance_observations_unbound` count the spans behind each aggregate row, and `correlation_id` names one sample span of the row.
+
+These are sampled telemetry claims bound to inventory, not authority: a pair shows that the
+sampled spans named that instance and endpoint within the trace window. It does not prove
+current connectivity, credentials or complete coverage of instances querying the database.
+Binding requires an exact RDS instance endpoint; Aurora cluster/reader and RDS Proxy endpoints
+stay unbound. The agent SQL view `sql_reader.topology_edges` does not project these fields; see
+[agent SQL reader](runbooks/agent-sql-reader.md#trace-queue-projection--트레이스-큐-투영).
 
 The UI supports the existing trace envelope and optional inventory/saved-source
 fields emitted by the bounded publication implementation in `web/lib/graph-store.ts`.

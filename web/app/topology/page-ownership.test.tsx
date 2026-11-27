@@ -19,7 +19,7 @@ const task = (name: string) => row(`task-${name}`, {
 });
 beforeEach(() => {
   localStorage.clear();
-  window.history.replaceState({}, '', '/');
+  window.history.replaceState({}, '', '/?view=flow');
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
   vi.stubGlobal('DOMMatrixReadOnly', class { m22 = 1; });
 });
@@ -214,7 +214,7 @@ describe('bounded ownership inventory paging', () => {
     const pending: (() => void)[] = [];
     let active = 0, peak = 0, completed = 0;
     const requests = serve({
-      inventory: Object.fromEntries(['target_group', 'ecs_task', 'subnet'].map(type => [type, largeInventory(type)])),
+      inventory: Object.fromEntries(['target_group', 'ecs_task', 'subnet', 'eni'].map(type => [type, largeInventory(type)])),
       inventoryReply: async (_url, body, signal) => {
         active++; peak = Math.max(peak, active);
         await new Promise<void>(resolve => {
@@ -229,17 +229,19 @@ describe('bounded ownership inventory paging', () => {
     try {
       await waitFor(() => expect(pending.length).toBeGreaterThan(0));
       expect(peak).toBeLessThanOrEqual(2);
-      while (completed < 21) {
+      while (completed < 25) {
         await waitFor(() => expect(pending.length).toBeGreaterThan(0));
         await act(async () => { pending.splice(0).forEach(resolve => resolve()); });
         expect(peak).toBeLessThanOrEqual(2);
       }
       await screen.findByRole('option', { name: 'ECS · ecs-app' });
       const inventoryReads = requests.filter(url => url.pathname.startsWith('/api/inventory/'));
-      expect(new Set(inventoryReads.map(url => url.pathname)).size).toBe(18);
-      expect(inventoryReads).toHaveLength(21);
+      expect(new Set(inventoryReads.map(url => url.pathname)).size).toBe(21);
+      expect(inventoryReads).toHaveLength(25);
+      // RDS placement inference is saved-graph-only: the live page never reads RDS sources.
+      expect(inventoryReads.some(url => /\/rds/.test(url.pathname))).toBe(false);
       expect(inventoryReads.every(url => url.searchParams.get('accounts') === 'self')).toBe(true);
-      for (const type of ['target_group', 'ecs_task', 'subnet']) {
+      for (const type of ['target_group', 'ecs_task', 'subnet', 'eni']) {
         expect(inventoryReads.filter(url => url.pathname.endsWith(`/${type}`))
           .map(url => url.searchParams.get('offset'))).toEqual(['0', '500']);
       }
@@ -283,7 +285,7 @@ describe('bounded ownership inventory paging', () => {
 
   it.each([false, true])('discloses out-of-region context without exclusive cluster filtering (pin: %s)', async pin => {
     const west = <T extends { region: string }>(value: T) => ({ ...value, region: 'us-west-2' });
-    if (pin) window.history.replaceState({}, '', '/?cluster=ecs:ecs-app');
+    if (pin) window.history.replaceState({}, '', '/?view=flow&cluster=ecs:ecs-app');
     serve({ inventory: { target_group: [west(targets)], ecs_task: [west(task('ecs-api'))],
       subnet: [west(row('subnet-app', { vpc_id: vpcId }))] } });
     render(<TopologyPage />);

@@ -94,7 +94,7 @@ export default function MetricTable<T>({
       const col = columns.find((c) => c.key === sortKey);
       if (col) {
         const mul = dir === 'asc' ? 1 : -1;
-        rows = [...rows].sort((a, b) => {
+        rows = rows.toSorted((a, b) => {
           const va = col.value(a); const vb = col.value(b);
           if (va == null && vb == null) return 0;
           if (va == null) return 1;  // null은 정렬 방향과 무관하게 마지막

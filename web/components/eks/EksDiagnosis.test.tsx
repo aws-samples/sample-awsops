@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import EksDiagnosis from './EksDiagnosis';
 import type { EksMetricStatus } from '@/lib/eks-metrics-types';
 
@@ -94,3 +94,30 @@ it('clears host metrics and Kubernetes rows when changing to a namesake member',
   expect(screen.queryByText('host-metric-node')).toBeNull();
   expect(screen.queryByText('host-kube-node')).toBeNull();
 });
+
+it('renders EC2/node-group rows as Ready unknown / Pressure unknown, never danger', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => ({
+    ok: true,
+    json: async () => url.includes('/metrics')
+      ? { controlPlane: {}, cluster: {}, nodes: {} }
+      : { rows: url.includes('kind=nodes') ? [
+        { name: 'ip-1.ec2.internal', status: 'EC2 running', source: 'aws-api' },
+        { name: 'ip-2.ec2.internal', status: 'EC2 stopping', source: 'aws-api' },
+        { name: 'kube-node', status: 'NotReady', conditions: [] },
+      ] : [] },
+  })));
+  render(<EksDiagnosis cluster="arn:aws:eks:us-west-2:222222222222:cluster/shared" />);
+  await screen.findByText('ip-1.ec2.internal');
+  const cell = (text: string) => screen.getAllByText(text).find((el) => el.tagName === 'TD')!;
+  const ready = cell('EC2 running · Ready unknown');
+  expect(ready.className).not.toMatch(/rose/);
+  const ec2Row = ready.closest('tr')!;
+  expect(within(ec2Row).getByText('unknown')).toBeTruthy();
+  expect(within(ec2Row).queryByText('none')).toBeNull();
+  // A kubelet NotReady row stays dangerous, and so does an EC2-view instance that is not running.
+  expect(cell('NotReady').className).toMatch(/rose/);
+  const stopping = within(screen.getByText('ip-2.ec2.internal').closest('tr')!).getAllByRole('cell')
+    .find((td) => /EC2 stopping/.test(td.textContent ?? ''))!;
+  expect(stopping.className).toMatch(/rose/);
+});
+

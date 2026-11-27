@@ -173,8 +173,6 @@ curl -X POST '/awsops/api/alert-webhook?source=generic' \
 
 ## 参考
 
-- ADR-022: 告警关联分析策略
-- ADR-026: HMAC 密钥 active+standby 双密钥策略
 - `src/lib/alert-types.ts` — 5 种来源的规范化逻辑
 - `src/lib/alert-correlation.ts` — 分组/去重/升级
 - `src/lib/alert-diagnosis.ts` — Bedrock 诊断编排

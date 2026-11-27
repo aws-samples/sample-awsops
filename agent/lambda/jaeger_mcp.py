@@ -17,8 +17,8 @@ from urllib.parse import parse_qs, quote, urlencode
 
 from cross_account import resolve_tool_name
 from datasource_http import (
-    NotConnected, SsrfBlocked, assert_host_allowed, auth_headers, health, http_json, load_datasource,
-    set_request_conn,
+    NotConnected, SsrfBlocked, assert_host_allowed, auth_headers, http_json, load_datasource,
+    query_probe, set_request_conn, request_timeout, observed_payload, HTTP_TIMEOUT, MAX_TRACE_RESPONSE_BYTES,
 )
 
 SLUG = "jaeger"
@@ -52,12 +52,14 @@ def _ds():
     return creds
 
 
-def _get(creds, path, params=None):
+def _get(creds, path, params=None, *, timeout=None, max_bytes=None):
     url = creds["endpoint"].rstrip("/") + path + ("?" + urlencode(params, doseq=True) if params else "")
-    status, data = http_json("GET", url, headers=auth_headers(creds))
+    extra = {"max_bytes": max_bytes} if max_bytes is not None else {}
+    status, data = http_json("GET", url, headers=auth_headers(creds),
+                             timeout=timeout if timeout is not None else request_timeout(creds), **extra)
     if status >= 400:  # Jaeger errors carry {"errors":[...]} — success = HTTP 2xx
         raise _ApiError(f"Jaeger HTTP {status}: {str(data.get('errors') or data.get('raw') or data)[:300]}")
-    return data
+    return observed_payload(data, status)
 
 
 def _byte_bound(obj):
@@ -88,16 +90,40 @@ def jaeger_search(args):
     except _ApiError as e:
         return err(str(e))
     params.setdefault("limit", "20")
-    params["limit"] = str(min(int(params["limit"]), MAX_TRACES))
+    if not re.fullmatch(r"\d{1,9}", str(params["limit"])):
+        return err("limit must be a positive integer")
+    if int(params["limit"]) == 0:
+        return err("limit must be a positive integer")
+    requested = max(1, min(int(params["limit"]), MAX_TRACES))
+    params["limit"] = str(requested)
     params["start"] = _parse_time_us(args.get("start"), 3600)
     params["end"] = _parse_time_us(args.get("end"))
     data = _get(_ds(), "/api/traces", params)
-    traces = data.get("data", []) if isinstance(data, dict) else []
+    if isinstance(data, dict) and data.get("errors"):
+        return ok({"traces": [], "truncated": False, "collectionStatus": "error"})
+    traces = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(traces, list):
+        return ok({"traces": [], "truncated": False, "collectionStatus": "unknown"})
     # Compact rows for the console/agent: full span trees are huge — summarize per trace.
     rows = []
+    invalid = False
+    skipped = 0
     for t in traces[:MAX_TRACES]:
-        spans = t.get("spans", []) if isinstance(t, dict) else []
-        procs = t.get("processes", {}) if isinstance(t, dict) else {}
+        if (not isinstance(t, dict) or not isinstance(t.get("traceID"), str)
+                or not 1 <= len(t["traceID"]) <= 32 or not _HEX.fullmatch(t["traceID"])
+                or not isinstance(t.get("spans"), list)
+                or not isinstance(t.get("processes"), dict)):
+            invalid = True
+            continue
+        spans, procs = t["spans"], t["processes"]
+        if not spans:
+            skipped += 1
+            continue  # a trace with no spans is disclosed as a skipped row, never a missing one
+        if not all(isinstance(s, dict) and type(s.get("startTime")) is int and 0 <= s["startTime"] <= 8640000000000000000
+                   and type(s.get("duration")) is int and 0 <= s["duration"] <= 8640000000000000000
+                   and isinstance(s.get("operationName"), str) for s in spans):
+            invalid = True
+            continue
         root = min(spans, key=lambda s: s.get("startTime", 0)) if spans else {}
         dur_us = max((s.get("startTime", 0) + s.get("duration", 0)) for s in spans) - root.get("startTime", 0) if spans else 0
         svc = ""
@@ -112,21 +138,33 @@ def jaeger_search(args):
             "durationMs": round(dur_us / 1000, 1),
             "startTime": root.get("startTime", 0),
         })
+    # Reaching the requested limit is saturation, not loss: Jaeger returns no marker, so more traces
+    # may exist and the result is `partial`; a local row/byte drop sets `truncated`.
+    saturated = len(traces) >= requested
+    http_status = getattr(data, "http_status", 200)
+    dropped = len(traces) > MAX_TRACES
+    state = "unknown" if invalid or http_status not in (200, 206) else "partial" if saturated or dropped or skipped or http_status == 206 else "ok" if rows else "empty"
     payload, btr = _byte_bound({"traces": rows})
-    return ok(payload if btr else {"truncated": len(traces) > MAX_TRACES, **payload})
+    if btr:
+        payload.pop("preview", None)  # never echo provider content, even as a bounded preview
+    emitted = payload.get("traces", [])
+    return ok({**payload, "traces": emitted, "truncated": btr or dropped,
+               "limitSaturated": saturated,
+               "collectionStatus": "unknown" if invalid or http_status not in (200, 206) else "partial" if btr else state,
+               "requestedLimit": requested, "returnedCount": len(emitted), "skippedCount": skipped})
 
 
 def jaeger_get_trace(args):
     tid = (args.get("trace_id") or "").strip()
     if not tid or not _HEX.match(tid):
         return err("trace_id must be a hex string")
-    data = _get(_ds(), f"/api/traces/{quote(tid, safe='')}")
+    data = _get(_ds(), f"/api/traces/{quote(tid, safe='')}", max_bytes=MAX_TRACE_RESPONSE_BYTES)
     payload, btr = _byte_bound(data if isinstance(data, dict) else {"trace": data})
     return ok(payload)
 
 
 def jaeger_services(args):
-    data = _get(_ds(), "/api/services")
+    data = _get(_ds(), "/api/services", timeout=HTTP_TIMEOUT)
     services = data.get("data", []) if isinstance(data, dict) else []
     return ok({"services": services if isinstance(services, list) else []})
 
@@ -135,22 +173,28 @@ def jaeger_operations(args):
     svc = (args.get("service") or "").strip()
     if not svc:
         return err("service required")
-    data = _get(_ds(), f"/api/services/{quote(svc, safe='')}/operations")
+    data = _get(_ds(), f"/api/services/{quote(svc, safe='')}/operations", timeout=HTTP_TIMEOUT)
     ops = data.get("data", []) if isinstance(data, dict) else []
     return ok({"operations": ops if isinstance(ops, list) else []})
 
 
 def jaeger_schema(args):
     """Service names (the query-gen 'vocabulary' — a Jaeger search is service-anchored)."""
-    data = _get(_ds(), "/api/services")
+    data = _get(_ds(), "/api/services", timeout=HTTP_TIMEOUT)
     services = data.get("data", []) if isinstance(data, dict) else []
     services = services if isinstance(services, list) else []
     return ok({"services": services[:100], "truncated": len(services) > 100})
 
 
 def jaeger_health(args):
-    """Connectivity probe for the pre-save Test / status badge: GET /api/services."""
-    return ok(health(load_datasource(SLUG), "/api/services"))
+    """Verify a recognizable query response, not an arbitrary HTTP 200."""
+    def run():
+        end = int(time.time())
+        return json.loads(jaeger_search({
+            "query": "service=awsops-connection-probe&limit=1",
+            "start": str(end - 60), "end": str(end),
+        })["body"]).get("collectionStatus")
+    return ok(query_probe(run, "Jaeger query access could not be verified"))
 
 
 _TOOLS = {

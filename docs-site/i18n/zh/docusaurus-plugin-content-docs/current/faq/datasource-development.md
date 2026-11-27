@@ -29,8 +29,8 @@ AWSops 的数据源是**只读连接器平台**。它是与 AWS 资源查询（A
 | Tempo | TraceQL | 分布式链路追踪 |
 | ClickHouse | SQL | 分析型数据库 |
 
-:::info 只读姿态（ADR-041）
-数据源仅处理**数据 read**（+ 受治理的外部 record/ticket/message write）。AWS 资源变更·自主行为已永久冻结（do-not-enable）。`web/app/api/datasources/query/route.ts` 的工具映射中**只存在读取工具**（mutate 工具不可达），并有测试验证该不变式。
+:::info 只读姿态
+数据源仅处理**数据 read**（+ 受治理的外部 record/ticket/message write）。AWS 资源变更·自主行为已冻结（do-not-enable）。与数据源相关的唯一例外是默认关闭的 `connector_target_sync_enabled`：启用后，添加数据源会在本栈自身的 AgentCore 网关上创建或更新该连接器的一个目标（不删除目标，也不管理网关）。`web/app/api/datasources/query/route.ts` 的工具映射中**只存在读取工具**（mutate 工具不可达），并有测试验证该不变式。
 :::
 
 ## 如何添加新的数据源类型（例如 Elasticsearch、InfluxDB）？
@@ -194,8 +194,8 @@ API 文档：
 如果有 OpenAPI（Swagger）YAML/JSON 文件，可以生成更准确的代码。Kiro 会自动引用放在项目中的规格文件，Claude Code 则在提示词中包含文件路径即可。
 :::
 
-:::caution 连接器仅限策划形态（ADR-040/041）
-外部连接器仅允许**受治理的策划（curated）连接器**——不包含任意形态的 BYO-MCP。新类型只能在 SSRF 防护·Secrets Manager 凭证·只读工具·DLP/redaction·`KNOWN_CONNECTOR_SLUGS` 允许列表的范围内添加。详细治理请参阅 `docs/decisions/ADR-040-governed-external-knowledge-comms-writes.md`、`ADR-041-read-only-means-resource-not-data.md`。
+:::caution 连接器须受治理
+外部连接器仅允许**受治理的连接器**——不包含任意形态的 BYO-MCP。管理员注册的 `custom_mcp` 集成是另一条路径，具备仅限管理员注册、按账户启用和公开工具上限；本指南介绍的是新增内置连接器类型。新类型只能在 SSRF 防护·Secrets Manager 凭证·只读工具·DLP/redaction·`KNOWN_CONNECTOR_SLUGS` 允许列表的范围内添加。
 :::
 
 ## 添加后的验证清单

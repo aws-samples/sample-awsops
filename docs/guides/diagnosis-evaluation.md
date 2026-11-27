@@ -43,6 +43,105 @@ LLM 없이 해당 결과를 렌더링하므로 Markdown·내보내기에도 미�
 화면은 같은 건수·사유를 표시하며 과거 보고서의 평가 기록이 없으면 평가 정보 없음으로
 표시한다. 활성 불변식이 없는 상태와 실제로 평가해 통과한 상태도 구분한다.
 
+### Section evidence and root-cause contract
+
+Each LLM section receives a `_run` block (UTC/KST run time, scope, region, tier) and a
+`_collection` entry per declared source: `ok`, `empty`, `partial`, `failed` or `not_collected`,
+plus the collector's window and caps (`sources.COLLECTION_WINDOWS`) and any notes. The
+prompt treats empty, failed and uncollected sources as unavailable evidence, never as a healthy
+result. A `partial` source keeps the evidence it returned while the missing portion stays unknown.
+The inventory sample also drops secret-bearing fields (policy documents, inline and assume-role policies, user data, environment variables, anything named like a password, secret, token or credential) before the report; `redacted_keys` names what was removed, the collection window says its absence is not evidence, and the deep IAM section must report policy analysis as unavailable rather than conclude a policy is missing or safe. Two kinds of gap are kept apart. Caps the collectors always apply, such as the 100-finding Security
+Hub page, the 24 KB inventory sample and the datasource payload cap, are disclosed to the model and
+listed in `summary.incomplete`, but they do not change the report status (the fixed 15-rows-per-type inventory sample is stated in the collection window and is not listed): an account with Security
+Hub standards enabled exceeds 100 findings routinely, and a status that always read `partial` would
+no longer tell a throttled collector from a normal cap. Unexpected gaps (an inventory type whose sample
+read failed, a failed Security Hub detail query) and failed collectors are listed in
+`summary.degraded` and make the report `partial`.
+Critical and Warning findings are collected in one `### 원인 분석 및 조치` table, normally at the end of the section:
+the target, the evidence field and value, a confirmed or suspected cause (or the missing
+data), a read-only verification command, remediation steps for the operator to review
+and apply through their own change process, and a confidence level. Non-Korean reports
+title the table in their language (`RCA_HEADINGS` in `sections.py`: `Root Cause and Remediation`,
+`原因分析与处置`, `原因分析と対処`). The contract is checked, not only prompted: a section that tags a
+`[Critical]` or `[Warning]` finding but has no such heading followed by a table with a header row, a
+separator row and at least one data row gets a visible marker and counts as degraded
+(`rca_missing`). A marker counts as a finding only in tag position: at the start of a line or list
+item (optionally a heading or bold) or of a table cell. Prose about the scale ("No [Critical] or
+[Warning] findings"), a marker paired with the next one (`[Critical]/[Warning] 발견 없음`) and code
+(``` or ~~~ fences, and inline code) are not findings, while `[Critical]/P1 …` still is. A tag
+whose whole remaining line or cell is a negation in the report's language or English (`- [Critical]
+발견 없음`, `**[Warning]** none`, `| [Critical] 未发现问题 |`) is not one either, but a finding that only
+starts with such a word (`- [Warning] None of the buckets are encrypted`) still is. Any root-cause heading followed
+by a table satisfies the check. It confirms the table exists; it does not check that every finding
+has a row, and a table inside a code fence does not count. The note itself carries no bracketed
+marker, so the UI does not raise the section's severity because of it. The UI's section-severity
+icon still keys on a bracketed marker anywhere in the body, so a section can show a Critical icon
+for a mention the check does not count as a finding. A section that already stopped at `max_tokens` carries only the truncation
+marker. The prompt forbids
+resource-changing CLI commands. As a deterministic backstop, a body that contains an `aws`
+command that is not provably read-only gets a visible warning and counts as degraded. The check
+is an allowlist, not a denylist of mutating verbs (which always misses some, such as
+`route53 change-resource-record-sets` or `sns subscribe`): each `aws <service> <operation>`
+passes only when its leading verb is a read verb (`describe`, `list`, `get`, `lookup`, `search`,
+`query`, `scan`, `check`, `validate`, `simulate`, `estimate`, `wait`, `tail`, `detect`, and the
+like; `batch-get-…` is judged by the verb after `batch`) or the operation is one of nine
+read-only exceptions (`start-query`, `start-live-tail`, `update-kubeconfig`, the three IAM `generate-…` report builders, and the pure `test-event-pattern`, `test-metric-filter` and `test-dns-answer`; the `generate` and `test` verbs themselves are not read-only, because `apigateway test-invoke-method` runs the method and its backend). Line continuations are joined before parsing. Options and their values are skipped wherever they appear, before the service or between the service and the operation (`aws s3 --region x rm`), so an option value cannot pose as the service or hide the operation. A matrix test wraps every mutating and read-only example in each of those positions, with and without `=`, continuations and quoting. Athena
+`start-query-execution` is not an exception, because it runs DDL and CTAS. For `aws s3`, which has exactly nine subcommands, only `ls` and
+`presign` pass; `cp`, `mv`, `rm`, `sync`, `mb`, `rb` and `website` are flagged. Text shaped unlike an operation (a lowercase `aws` followed by an ordinary word) is
+ignored, so prose does not trigger it. Leading global options such as `--region` and `--profile` are
+skipped. The `aws` itself must be lowercase (so "AWS Lambda update" stays prose), while the service
+and operation are compared lowercased, as the CLI accepts `EC2 Delete-Volume`. A new read verb the model invents is flagged until it is
+added to `_READ_ONLY_VERBS`; that fails safe. Nothing is executed (ADR-005).
+
+The detector is a best-effort text heuristic, not a shell parser. It does not recognize commands built
+through shell variables or command substitution, passed through wrappers such as `xargs`, `bash -c` or
+`ssh`, or written for other tools (`terraform apply`, `kubectl apply`). The prompt rule is the primary
+control; the detector catches a model that disregards it in the common forms and makes that visible.
+
+A section that fails, returns no non-whitespace text, stops at `max_tokens`, contains a
+resource-changing command, or tags findings without the root-cause table is listed in
+`summary.render_degraded`.
+Its body carries a visible marker, and the report status becomes `partial`, the same
+status a degraded collector produces. Failed sections show a fixed localized message, without
+provider exception details in the report body. Section budgets were raised from 1500/2200 tokens. A
+live mid-tier run against real collectors stopped 8 of 9 sections at 2500 tokens, which means
+the old budgets had been cutting sections silently. Budgets are now 6000 (light/mid) and 7000
+(deep) tokens. `executive_summary`, `cost_overview`, `cost_optimization`, `recommendations` and `compute_infrastructure`
+get at least 8000 (`SECTION_MIN_TOKENS`). Per-report output-token cost rises accordingly.
+
+The report job is one Step Functions task with a 3600 s limit, and killing the task loses the
+whole report, because `finish_report` never runs. Waits on Bedrock are therefore bounded together
+rather than per call. The render phase has one wall-clock budget, `DIAGNOSIS_RENDER_BUDGET_S`
+(default 2400 s). It is also capped against the start of the whole `generate()` call: the render deadline never passes `DIAGNOSIS_TASK_BUDGET_S` (default 3300 s, the 3600 s limit minus start-up margin) less `DIAGNOSIS_POST_RENDER_RESERVE_S` (default 600 s, for assembly, upload, export and the title call), so a slow collection phase shortens rendering instead of pushing the task past the limit. Each
+`invoke_model` call is not streamed, so its read timeout is sized from the section's token budget
+(20 tokens/s plus 60 s, about 460 s for 8000 tokens, with `DIAGNOSIS_BEDROCK_READ_TIMEOUT_S`,
+default 90 s, as the floor) and capped by the budget that remains. botocore retries are off, because
+a legacy retry would multiply a read timeout threefold for every section in every wave of four.
+Throttling, 5xx and transient connection failures (a reset or refused connection, but not a read timeout, which already spent the whole call budget) are retried up to three attempts in total inside the budget. Once the
+budget is spent, the remaining sections fail fast with the localized degraded body and the report
+completes as `partial`, not as a killed task. Lower `DIAGNOSIS_RENDER_BUDGET_S` to tighten the
+bound.
+
+A retry backoff is skipped, and the section fails fast, when a call could no longer finish after
+the sleep, so throttling never sleeps past the render budget. Every section budget is capped by
+`DIAGNOSIS_MAX_OUTPUT_TOKENS` (default 32000). The default models accept more; if you point
+`DIAGNOSIS_MODEL_*` at a model with a smaller output limit, set this variable to that limit so
+sections are not rejected. Opus 5.x always thinks, so its Deep sections, invariant proposals and an
+Opus title model get `DIAGNOSIS_OPUS_THINKING_HEADROOM` (default 8000) extra output tokens; the
+read timeout grows with the budget but stays clamped to the remaining render budget. The coverage note names the gap behind a `partial` source (failed reads,
+the inventory sample cap, the 100-finding Security Hub page, payload caps). A failed Security Hub
+detail query reports a bounded error code rather than provider text, and that page is sorted by
+normalized severity, so it holds the highest-severity findings (`top_findings_order: severity_desc`;
+if Security Hub rejects the sort with `InvalidInputException` or the client rejects the
+parameter, the unsorted page is used and tagged `unsorted`), and the section prompt tells the model
+not to read missing HIGH groups as no HIGH findings. The severity
+rollup reads a separate, unsorted page, so HIGH groups can be absent from the detail while HIGH
+counts exist.
+
+The service-map collector adds `to_name`, the resolved X-Ray target name, for the
+model and reader only. The evaluator still reads `to`, which stays unresolved, so the
+invariant boundary above is unchanged.
+
 ## Offline use / 오프라인 실행
 
 Run from the repository root. Offline scoring uses only Python's standard library;
@@ -181,16 +280,17 @@ use 0 when abstaining. Do not output elapsed_ms or cost_usd.
 **EN** — Each input file is limited to 1 MiB. Offline: at most 32 cases, 16 candidate
 causes, 16 evidence records per case, 64-character IDs, 200-character cause descriptions,
 1,000-character summaries and 2,000-character evidence text. Model mode: at most 8 sequential
-calls, one reused client, 5s connect / 30s read timeout, one attempt with no retries;
-system + case text ≤16,000 UTF-8 bytes, ≤512 output tokens per call and ≤8,192 response bytes.
-Only one JSON text block ending normally is accepted; truncation, tool use and malformed
-output fail closed. SDK timeouts are not a hard whole-run deadline or a dollar budget.
+calls, one reused client, 5s connect / 264s read timeout (scaled from the token cap), one
+attempt with no retries; system + case text ≤16,000 UTF-8 bytes, ≤4,096 output tokens per call
+(reasoning counts toward the cap) and ≤8,192 response bytes. Text blocks are joined and reasoning
+blocks ignored; truncation, tool use and malformed output fail closed. With the larger token cap the
+8,192-byte response limit is usually the binding bound for verbose models. SDK timeouts are not a hard whole-run deadline or a dollar budget.
 
 **KO** — 파일당 1 MiB, 오프라인 최대 32개 사례·16개 후보 원인·사례당 16개 증거입니다.
 ID 64자, 원인 설명 200자, 요약 1,000자, 증거 2,000자로 제한합니다. 모델 모드는 최대
-8회 순차 호출, 단일 클라이언트, 연결 5초·읽기 30초, 재시도 없음입니다.
-시스템+사례 텍스트 16,000바이트, 호출당 출력 512토큰·응답 8,192바이트 이하입니다.
-정상 종료한 단일 JSON 텍스트만 허용합니다. 전체 실행 시간·금액 상한을 보장하는 것은 아닙니다.
+8회 순차 호출, 단일 클라이언트, 연결 5초·읽기 264초(토큰 상한 기준), 재시도 없음입니다.
+시스템+사례 텍스트 16,000바이트, 호출당 출력 4,096토큰(추론 토큰 포함)·응답 8,192바이트 이하입니다.
+정상 종료한 텍스트 블록만 이어 붙이고 추론 블록은 무시합니다. 토큰 상한이 커져 장황한 모델에는 대개 8,192바이트 응답 상한이 먼저 걸립니다. 전체 실행 시간·금액 상한을 보장하는 것은 아닙니다.
 
 **EN** — Keep fixtures synthetic and remove secrets, account identifiers and personal data
 before any explicit model run. The synthetic flag is a declaration, not a redaction scanner.
@@ -204,6 +304,134 @@ synthetic 표시는 선언일 뿐 자동 비식별화가 아닙니다. 원격 �
 변경은 없습니다. 주입 사례 하나와 ID 대조만으로 자유 서술의 타당성, 확신도 보정,
 새 장애, 조치 안전성, 운영 신뢰성을 검증할 수 없습니다.
 비교 시 fixture 버전·예측 파일·모델 ID/리전·프롬프트 버전을 보관하세요.
+
+## Discovery-driven six-pillar report acceptance
+
+The worker's `DIAGNOSIS_EVIDENCE_LOOP_ENABLED` environment variable selects a
+separate report path. Terraform's `diagnosis_evidence_loop_enabled` defaults to
+false; a report payload cannot enable it. The disabled path retains the section
+renderer described above. Ordinary chat and the dark Anthropic chat loop are
+unaffected.
+
+The enabled report collects scoped inventory and graph evidence, representative
+14-day EC2/RDS utilization and guarded provider sizing candidates. Six specialist
+agents cover Operational Excellence, Security, Reliability, Performance
+Efficiency, Cost Optimization and Sustainability. A structured cross-pillar
+review follows semantic admission. Light has one pass; mid/deep may collect one
+validated follow-up and rerun at most two affected specialists before final review.
+Unknown evidence, failed stages and uncompleted pillars remain visible.
+
+Model output selects admitted resource/evidence IDs and controlled claims.
+Code renders values, resource identities, scope, windows and provenance; it also
+uses a localized six-pillar account title. Model explanations remain hypotheses. Neither
+valid JSON nor a reviewer citation establishes causality. Final summary and
+recommendations cannot introduce targets or savings absent from admitted facts.
+After the last review, a budgeted editor writes the assessment, supporting findings
+and follow-up checks in one of four report languages. The executive brief ranks up to three admitted risks by severity, shows their evidence sources, and lists up to three immediate checks for the highest-ranked findings with safe prerequisites. Its architecture section shows the admitted inventory projection and at most twelve representative endpoint pairs, distinguishing calls, DNS, flows, configured dependencies and permitted paths. The count uses distinct endpoint pairs per relationship kind. Repeated observations contribute citations to the same pair. Undirected flow pairs retain their DNS-window-correlation qualifier when present. Source windows and coverage qualify those pairs.
+
+A pillar shows decision criteria only when it has a finding with customer-visible prose. A target-by-target verification table appears only when those findings have safe prerequisites. The main document covers all six pillars, including unassessed or failed domains. When available, a code-owned review topic from cited evidence for a highest-severity finding leads the title, followed by the account-wide assessment label. Resource identifiers and model prose stay out of list titles. Telemetry service nodes are counted separately; their scrubbed service names label observed edges, and unresolved workload identity is disclosed. When customer-visible findings have safe next checks, the report includes an immediate, near-term and medium-term roadmap. The detail view shows service/source tags alongside pillar tags.
+
+A separate model call checks each proposed
+paragraph against its matched finding. The worker inserts resource identities and source scope in the body. Validated single-resource metric observations may show scoped CPU or memory measurements. Other findings keep measured values in the appendix.
+
+When the verifier accepts at least one paragraph and rejects another, the worker uses those rewrites and keeps the admitted specialist text for the others. It records `checked_count` and `accepted_count` on the partial `report_editor_check` stage and adds `report_editor_check:partial_verification` to `render_degraded`, so the report finishes as `partial`. A failed draft or verifier response (including an empty acceptance list) falls back to the admitted explanations and records a failed stage. A valid draft containing only observations needs no paragraph verification.
+
+The appendix retains the eight standard or fifteen deep catalog sections. Intended vs Actual remains deterministic. Scoped dependency pairs do not
+certify the unresolved name-based invariant graph or an encryption aggregate;
+those live invariant inputs remain unassessed.
+
+Trusted specialist and reviewer instructions carry the validated report locale,
+including reruns and final review. JSON keys, claim enums and opaque references
+stay fixed across languages. Redaction preserves code-owned references while
+scrubbing source strings. Semantic admission and the defensive renderer reject
+numeric model prose, including localized currency and numeral forms; displayed
+measurements come from admitted facts. This conservative prose guard can also
+withhold legitimate numerical wording. Incomplete enabled reports finish as
+`partial`, even when no separate degraded condition was recorded.
+
+### Connection criteria
+
+| Fixture | Required result |
+| --- | --- |
+| Fresh span with scoped EC2 identity and exact unique inventory DB endpoint | Preserve the observed instance/service/DB pair with opaque correlation ID, provenance and observation window |
+| One service, instance A calling DB1 and instance B calling DB2 | Exactly the observed pairs; never A→DB2 or B→DB1 |
+| Shared security group, VPC, tag or service name only | Configuration/allowed path/candidate; no confirmed application connection |
+| Ambiguous identity, conflicting instance claims or same endpoint in another region | Keep binding unresolved |
+| Stale retained graph or missing collection state | Historical/unknown coverage; no current healthy connection |
+| Graph refresh fails, returns partial state or removes a former edge | Invalidate prior graph freshness before reading; a retained former edge cannot remain a current observation |
+| Later X-Ray reference, repeated cursor, truncated sample or region cap | Preserve references and explicitly incomplete coverage |
+| Member report | Own scoped inventory/configuration only; no host credentials, trace graph or FinOps substitution |
+
+Trace adapters project only `cloud.resource_id`, `host.id` and
+`service.instance.id` identity claims in addition to their existing allowlist.
+Claims are independently checked against inventory participation. Same-span
+pair metadata travels through existing graph JSON storage; no schema migration
+or connection-string inspection is involved. Sampled traffic does not prove
+successful SQL or a causal bottleneck.
+
+### Right sizing criteria
+
+| Fixture | Required result |
+| --- | --- |
+| Fresh provider option with known rank, generation time, lookback and scoped metrics | Named provider candidate, risk and manual verification prerequisites |
+| Short CPU-only sample, missing memory/I/O or inadequate sample coverage | Investigation candidate; no safe downsize assertion |
+| RDS request | Correct region and `DBInstanceIdentifier` dimension, DB pressure/connection/HA caveats |
+| Lookback below 14 days, stale recommendation or protected tags | Withhold definitive sizing; disclose guard |
+| Missing provider risk/utilization or partial provider page | Unknown/partial evidence rather than zero risk |
+| Service-level cost, partial month or mixed currencies | No fabricated resource savings or cross-currency sum |
+| Duplicate resource recommendations across pillars | Avoid duplicate savings; retain one guarded candidate |
+
+Discovery is bounded to eight inventory regions, three X-Ray pages per region,
+200 resources, 400 relationships and 192 KiB of normalized context. Omissions are
+coverage gaps, not evidence of absence. Compute Optimizer access adds only the
+gated EC2/RDS recommendation reads and does not turn on FinOps.
+
+### Allocation and stage criteria
+
+The handler owns a thread-safe ledger from entry through artifact export and
+local title selection. Analysis leaves the existing 600-second artifact reserve
+inside a 3,300-second worker deadline. Every model HTTP attempt, including
+failures and retries, reserves serialized input and requested output plus
+thinking before dispatch. Per-attempt caps are 96 KiB and 8,192 tokens; report
+attempt caps are 20/24/32, input caps 2/3/4 MiB and output allocation caps
+100,000/120,000/200,000 tokens for light/mid/deep. Actual usage is recorded when
+provided; missing usage stays unknown. These are allocation limits, not an
+enforced dollar budget.
+
+Offline tests must reject fabricated references, wrong scope, configuration
+misrepresented as observed traffic, numerical prose injection, malformed or
+truncated JSON, unsupported model overrides and invalid discovery requests.
+They also cover stage order, concurrency, deadline exhaustion, deduplicated
+follow-up, no progress and local presentation. Provider/model responses are
+fixtures. No test result demonstrates deployed discovery, model accuracy,
+real AWS permissions, measured savings or successful runtime rollout.
+No-progress checks compare scoped facts, windows and qualification, rather than
+capture timestamps or generated evidence IDs. A timestamp-only refresh ends
+without specialist reruns; a changed fact, window, coverage or freshness can
+justify the remaining bounded pass.
+
+Run from the repository root:
+
+```bash
+python3 -m pytest -q scripts/v2/workers/diagnosis
+cd web && npx vitest run lib/diagnosis-deck.test.ts lib/trace-source.test.ts lib/trace-graph.test.ts \
+  lib/graph-store-trace.test.ts lib/graph-state.test.ts
+```
+
+Deployment remains an operator action. Apply reviewed worker IAM/configuration,
+ship the trace adapter and worker image, then obtain explicit authorization for
+live discovery/model acceptance; source verification alone does not activate
+the flag or establish release readiness.
+
+### Presentation exports
+
+The Present button opens an isolated preview from the report detail and print view. Those views also build an offline HTML presentation and an editable PowerPoint briefing in the browser from the same authorized Markdown snapshot. They use no new model calls, AWS reads or stored artifacts. The HTML includes the customer sections for inspection. The presentation omits the final evidence appendix when its localized heading matches the generated table-of-contents link to `#evidence_appendix`. Legacy reports can end with a localized Data coverage heading and a list of inline-code collector keys followed by status values. The HTML and PowerPoint briefings omit that operator section from slides, source text and notes. Legacy Word and PDF downloads retain it. The PowerPoint contains editable text and shapes, with the source rows for each briefing slide in its speaker notes. The inventory overview shows a bounded excerpt. Decision tables and pillar findings paginate in full. The presentation draws observed calls with directional connectors, configuration associations with neutral lines, and time- and region-matched VPC membership inside a boundary. It keeps inventory without verified pairs unconnected. Comparable measures with an explicit unit can use an editable chart, and proposed phases retain their acceptance criteria. The project [briefing skill](../../.agents/skills/awsops-diagnosis-briefing/SKILL.md) describes how to author a customer edition from saved evidence. The detailed evidence appendix is available in the original report.
+
+### Customer findings and collection coverage
+
+The executive ranking uses admitted, readable findings. Coverage gaps, withheld prose and a bare statement that metrics were collected do not qualify as customer risks. A pillar with only coverage gaps or withheld explanations retains its status and admitted finding count. It defers the corrective decision and can show one safe prerequisite under “Before deciding”. Its verification table and decision criteria are omitted. The underlying admission ledger and source diagnostics remain available in the authenticated evidence appendix and Markdown archive.
+
+For evidence-loop Word and PDF downloads, the worker looks for the last exact localized appendix heading (in English, `## Evidence appendix`) and the matching table-of-contents line (`- [Evidence appendix](#evidence_appendix)`) before the first section. When both are present, it removes that line and everything from the matched heading onward. A heading alone preserves the original Markdown for conversion. Downloads remain customer-scoped and can include the account ID in the report heading.
 
 API reference / API 참고:
 [Amazon Bedrock Converse](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Converse.html).

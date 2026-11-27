@@ -27,10 +27,10 @@ def admission(diff, context, omitted_source=""):
     except OSError:
         return False, "diff file unavailable; inspect input preparation"
     if len(data) > MAX_BYTES:
-        return False, "diff exceeds 128 KiB; split the change or implement complete bounded review batches"
+        return False, "diff exceeds 128 KiB for one review call; split the change"
     # Preserve original bytes for the reviewer CLIs; do not silently replace them.
     if data.count(b"\n") > MAX_LINES:
-        return False, "diff exceeds 6000 lines; split the change or implement complete bounded review batches"
+        return False, "diff exceeds 6000 lines for one review call; split the change"
     # Reserve from the actual scrubbed bytes too: redaction may expand short values.
     try:
         scrubbed = subprocess.run(

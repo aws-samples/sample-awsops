@@ -378,8 +378,8 @@ test('same-page navigation and browser history keep the opt-in view consistent w
   const calls = await fixtures(page);
   await page.goto('/topology?view=e2e');
   await expect(page.getByRole('heading', { name: '서비스 + 네트워크', exact: true })).toBeVisible();
-  await page.locator('a[href="/topology"]').first().click();
-  await expect(page).toHaveURL(/\/topology$/);
+  await page.locator('a[href="/topology?view=flow"]').first().click();
+  await expect(page).toHaveURL(/\/topology\?view=flow$/);
   await expect(page.getByRole('heading', { name: 'Topology', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '네트워크 조회', exact: true })).toHaveCount(0);
   await page.getByRole('link', { name: '서비스 + 네트워크 →', exact: true }).click();

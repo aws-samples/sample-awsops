@@ -22,7 +22,7 @@ AWSops 是面向 AWS 与 Kubernetes 环境的**实时只读（read-only）运维
 平台是**基于 Terraform 的 MSA**——实时 AWS 查询由 **Amazon Bedrock AgentCore MCP 工具**负责，应用状态持久化在 **Aurora Serverless v2（PostgreSQL 17）**中。
 
 :::info
-AWSops 是**只读**运维工具。它查询·可视化·诊断基础设施现状，但不会变更 AWS 资源。详情请参阅下文"AWSops 会变更我的基础设施吗？"。
+AWSops 默认是**只读**运维工具。它查询·可视化·诊断基础设施现状，除两项经所有者批准、默认关闭的例外外，不会变更 AWS 资源。详情请参阅下文"AWSops 会变更我的基础设施吗？"。
 :::
 
 ## 如何部署，采用什么架构运行？
@@ -33,7 +33,7 @@ AWSops 是由 **Terraform**（`terraform/foundation/`，部分 S3 backend）预�
 |------|------|
 | **IaC** | Terraform（S3 partial backend，`use_lockfile`）。CDK 已废弃 |
 | **边缘** | CloudFront（TLS）→ VPC Origin（`https-only:443`）→ 内部 ALB HTTPS:443（区域 ACM）→ Fargate。**没有公开 ALB** |
-| **计算** | ECS Fargate（arm64）。web 是 Next.js 15 thin-BFF，在**根路径（`/`）**提供服务 |
+| **计算** | ECS Fargate（arm64）。web 是 Next.js 16 thin-BFF，在**根路径（`/`）**提供服务 |
 | **数据** | Aurora Serverless v2（PostgreSQL 17），通过 node-pg 访问 |
 | **AI** | AgentCore Runtime + 9 个分区网关的 MCP Lambda 工具（实时查询） |
 | **异步 worker** | SQS → ESM（kill-switch）→ dispatcher Lambda → Step Functions → Lambda 或 Fargate |
@@ -46,11 +46,11 @@ AWSops 是由 **Terraform**（`terraform/foundation/`，部分 S3 backend）预�
 
 ## AWSops 会变更我的基础设施吗？
 
-**不会。** AWSops 是**只读运维仪表板 + AI 诊断**工具。**AWS 资源变更与自主执行（autonomy）已永久冻结（do-not-enable）**。任何页面或 AI 功能都不会终止 EC2、修改 SG 或变更基础设施。
+**不会。** AWSops 是**只读运维仪表板 + AI 诊断**工具。**AWS 资源变更与自主执行（autonomy）已冻结（do-not-enable）**。任何页面或 AI 功能都不会终止 EC2、修改 SG 或变更工作负载基础设施。唯一的例外是两项经所有者批准、默认关闭的操作，且都仅限于 AWSops 栈自身的资源：Aurora 密钥轮换时重启自身的 Web 服务，以及管理员添加数据源时在自身的 AgentCore 网关上创建或更新一个连接器目标（不包括删除或管理网关的权限）。
 
 AI 助手与诊断只是**查询**实时数据进行分析·诊断，不执行变更（mutation）。约 160 个 AgentCore MCP Lambda 工具全部为 read-only。
 
-在治理下唯一被允许的"写入"是**外部数据记录**——例如在外部系统中留下报告·工单·消息。该功能仅在以下防护下运行：
+除上述两项例外外，在治理下唯一被允许的"写入"是**外部数据记录**——例如在外部系统中留下报告·工单·消息。该功能仅在以下防护下运行：
 
 - SSRF 防护（阻断 metadata/IMDS，destination allowlist）
 - 密钥由 Secrets Manager 管理
@@ -59,7 +59,7 @@ AI 助手与诊断只是**查询**实时数据进行分析·诊断，不执行�
 - 默认 flag-OFF
 
 :::info
-外部"写入"是**数据记录**（工单·消息·报告），**而非 AWS 资源变更**。对 AWS 基础设施本身的变更权限不会通过任何途径授予。
+外部"写入"是**数据记录**（工单·消息·报告），**而非 AWS 资源变更**。外部写入路径不会授予对 AWS 基础设施本身的变更权限。
 :::
 
 ## 如何登录？
@@ -96,7 +96,7 @@ AWSops 不使用 EC2 实例内的 JSON 文件，而是将状态存储在**托管
 实时 AWS / Kubernetes 数据通过 **AgentCore MCP Lambda 工具**查询。约 160 个只读工具分布在 **9 个分区网关**（network · container · data · security · cost · monitoring · iac · ops · external-obs）中。
 
 - 所有工具均为 read-only。
-- 网关数量为 **9 个**（ADR-004 修订 2026-06-24）— 承载 Prometheus·ClickHouse 连接器的 external-obs 作为第九个网关被配置并参与路由。
+- 网关数量为 **9 个**— 承载 Prometheus·ClickHouse 连接器的 external-obs 作为第九个网关被配置并参与路由。
 - 不再依赖本地 Steampipe（127.0.0.1:9193）服务或对 380 个表的直接访问。
 
 ## 可以查询外部可观测性数据（Prometheus / Loki / Tempo / ClickHouse / Datadog）吗？
@@ -113,7 +113,7 @@ AWSops 不使用 EC2 实例内的 JSON 文件，而是将状态存储在**托管
 - **NL→query 聊天注入** — AI 助手将自然语言问题转换为数据源查询
 
 :::info
-连接器输入受 **SSRF 防护 + 大小限制**约束（解析前 `readJsonBounded`，阻断 metadata/IMDS）。数据源平台对外部数据**只读**，不会变更 AWS 资源。
+连接器输入受 **SSRF 防护 + 大小限制**约束（解析前 `readJsonBounded`，阻断 metadata/IMDS）。数据源平台对外部数据**只读**。仅在启用默认关闭的 `connector_target_sync_enabled` 时，添加数据源才会在本栈自身的 AgentCore 网关上创建或更新该连接器的一个目标；不会变更其他 AWS 资源。
 :::
 
 ## 支持主题和移动端吗？

@@ -41,12 +41,13 @@ def test_redeploys_when_event_secret_has_different_random_suffix():
     assert result == {"redeployed": ["web"]}
 
 
-def test_skips_unrelated_secret():
+def test_skips_unrelated_secret(capsys):
     with patch.dict(os.environ, {"CLUSTER": "c", "SERVICES": "web", "AURORA_SECRET_ARN": AURORA_ARN}):
         with patch("redeploy.boto3.client") as mock_client:
             result = redeploy.handler(_service_event("arn:aws:secretsmanager:ap-northeast-2:123456789012:secret:some-other-secret-ab12cd"), None)
             mock_client.assert_not_called()
-    assert "skipped" in result
+    assert result == {"skipped": "unrelated-secret"}
+    assert "some-other-secret" not in capsys.readouterr().out
 
 
 def test_fail_closed_when_target_unconfigured():

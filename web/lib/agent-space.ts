@@ -1,5 +1,5 @@
 // web/lib/agent-space.ts
-// ADR-031 Phase 2 — per-account Agent Space CRUD + server-side tool-allowlist intersection.
+// ADR-004[legacy 031] Phase 2 — per-account Agent Space CRUD + server-side tool-allowlist intersection.
 import { getPool } from '@/lib/db';
 import { writeAudit } from '@/lib/catalog';
 
@@ -9,10 +9,10 @@ export interface AgentSpace {
   enabledSkillIds: number[];
   toolAllowlist: string[];
   version: number;
-  // ADR-039 P2 — optional so existing AgentSpace literals/fixtures stay valid; getAgentSpace/
+  // ADR-007[legacy 039] P2 — optional so existing AgentSpace literals/fixtures stay valid; getAgentSpace/
   // upsertAgentSpace always populate them (with defaults).
   enabledIntegrationIds?: number[];     // per-space enabled integrations
-  allowPrivateDatasource?: boolean;     // ADR-011 private-egress opt-in (default false)
+  allowPrivateDatasource?: boolean;     // ADR-007[legacy 011] private-egress opt-in (default false)
   nonAdminAuthoring?: boolean;          // §10 non-admin authoring flag (default false)
 }
 
@@ -39,7 +39,7 @@ export const KNOWN_TOOL_CATALOG: Record<string, string[] | null> = {
 };
 
 /**
- * Server-side tool-allowlist enforcement (ADR-031 Addendum #5), computed OUTSIDE the model.
+ * Server-side tool-allowlist enforcement (ADR-004[legacy 031] Addendum #5), computed OUTSIDE the model.
  * A skill cannot grant a tool the Agent Space does not allow.
  *
  * result = skillTools

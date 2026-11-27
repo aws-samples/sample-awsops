@@ -17,7 +17,7 @@ test('real migration Terraform plans: default off, private ARM64 task and exact 
     await copyFile(join(root, 'terraform/foundation/.terraform.lock.hcl'), join(dir, '.terraform.lock.hcl'));
     await writeFile(join(dir, 'fixture.tf'), `
 terraform {
-  required_version = "= 1.15.7"
+  required_version = "= 1.17.1"
   required_providers {
     aws = { source = "hashicorp/aws", version = "~> 6.0" }
     archive = { source = "hashicorp/archive", version = "~> 2.4" }

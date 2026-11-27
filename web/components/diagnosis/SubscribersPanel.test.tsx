@@ -40,6 +40,18 @@ describe('SubscribersPanel', () => {
     expect(screen.getAllByText('확인 대기').length).toBeGreaterThanOrEqual(1);
   });
 
+  it('Enter confirming an IME composition does not add a subscriber; plain Enter does', async () => {
+    setFetch((url, init) => (init?.method === 'POST' ? { body: { ok: true } } : { body: listBody() }));
+    render(<SubscribersPanel />);
+    const input = await screen.findByPlaceholderText('email@example.com');
+    fireEvent.change(input, { target: { value: 'c@x.io' } });
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+    const posts = () => fetchMock.mock.calls.filter((c) => (c[1] as RequestInit | undefined)?.method === 'POST');
+    expect(posts().length).toBe(0);
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(posts().length).toBe(1));
+  });
+
   // Test-notification send (gap L53).
   it('offers 테스트 발송 only to admins with a confirmed subscriber, and POSTs the test route', async () => {
     setFetch((url, init) => (init?.method === 'POST' && String(url).endsWith('/test')

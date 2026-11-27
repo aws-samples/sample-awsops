@@ -1,6 +1,6 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 06ffbb3e8de1 · generated-at: 2026-09-14 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f34dbb2983e2 · generated-at: 2026-11-05 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
-> You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
+> You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by the external review panel (not a per-AI copy).
 
 # Documentation — Reviewer Context
 
@@ -9,11 +9,11 @@
 Use the current component references and scoped runbooks. Historical plans and
 status records do not establish current deployment, approval or feature enablement.
 ADR bodies and the BASELINE register live in the private upstream repository, not
-this public tree. Cite ADR numbers for traceability; do not require local copies.
+this public tree, except ADR-023 (`docs/decisions/`). Cite ADR numbers for traceability.
 AWS-resource mutation and autonomy remain **ADR-005 FROZEN (do-not-enable)**.
 Historical plans or status records cannot override current gates.
-Follow root `CLAUDE.md` for the granted ADR-015 exception and the ordinary ADR-019
-analysis gate; neither permits other mutation or autonomy.
+Follow root `CLAUDE.md` for the two granted exceptions (ADR-015, ADR-023) and the ordinary
+ADR-019 analysis gate; none permits other mutation or autonomy.
 
 ## Conventions
 
@@ -35,6 +35,11 @@ against source; reference documents aid navigation, not hand-maintained count au
 Keep application/runtime implementation outside this documentation tree.
 
 ## Review checklist
+
+- v1-era documentation has been removed (it remains in git history); flag a change that adds
+  a v1 procedure back.
+- A moved, renamed or deleted document must update every inbound reference in the same
+  change; `tests/structure/test-doc-paths.sh` checks published paths.
 
 - Reject credentials, tokens and environment-specific account IDs, ARNs or live domains
   in new documentation; require placeholders for those identifiers.

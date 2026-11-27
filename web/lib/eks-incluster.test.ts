@@ -81,12 +81,16 @@ describe('eksToken', () => {
 
 describe('isKind', () => {
   // ⚠️ PR #36: with AmazonEKSAdminViewPolicy (*/get,list,watch — Secrets readable) this
-  // allow-list is the SINGLE line of defense. secrets rejection below is pinned (configmaps became
-  // an allowed EXPLORER kind 2026-07-21 — METADATA-ONLY: the normalizer emits a key COUNT, never values)
-  // intentionally — any new kind must extend this test + the eks.tf comment in the same PR.
+  // allow-list is the SINGLE line of defense for kind-addressed reads. secrets rejection below is
+  // pinned (configmaps became an allowed EXPLORER kind 2026-07-21 — METADATA-ONLY on this path: the
+  // normalizer emits a key COUNT, never values) intentionally — any new kind must extend this test
+  // + the eks.tf comment in the same PR.
+  // db-refs (lib/eks-db-refs.ts) is a fixed read path, NOT a kind: it scans Pod env and referenced
+  // ConfigMap values server-side and returns hostnames only (eks-db-refs.test.ts pins that it never
+  // requests /secrets). It must stay unaddressable through the kind allow-list, pinned below.
   it('accepts the read-only kinds and rejects others', () => {
     for (const k of ['nodes', 'pods', 'deployments', 'services', 'namespaces', 'ingresses']) expect(isKind(k)).toBe(true);
-    for (const k of ['secrets', '', 'NODES', 'pods/exec']) expect(isKind(k)).toBe(false);
+    for (const k of ['secrets', '', 'NODES', 'pods/exec', 'db-refs']) expect(isKind(k)).toBe(false);
   });
 });
 
@@ -244,6 +248,30 @@ describe('normalizers', () => {
     expect(emptySel.selector).toBeUndefined(); // {} joins nothing meaningfully
   });
 
+  it('service: lbHostname only for LoadBalancer type with a status hostname', () => {
+    const lb = normalizeService({
+      metadata: { name: 'lb', namespace: 'd' },
+      spec: { type: 'LoadBalancer', clusterIP: '10.0.0.1', ports: [] },
+      status: { loadBalancer: { ingress: [{ hostname: 'x.elb.amazonaws.com' }] } },
+    });
+    expect(lb.lbHostname).toBe('x.elb.amazonaws.com');
+    const ip = normalizeService({ metadata: { name: 'lb', namespace: 'd' }, spec: { type: 'LoadBalancer', ports: [] }, status: { loadBalancer: { ingress: [{ ip: '1.2.3.4' }] } } });
+    expect(ip.lbHostname).toBeUndefined();
+    const cip = normalizeService({ metadata: { name: 'c', namespace: 'd' }, spec: { type: 'ClusterIP', ports: [] }, status: { loadBalancer: { ingress: [{ hostname: 'x.elb' }] } } });
+    expect(cip.lbHostname).toBeUndefined();
+  });
+
+  it('service: lbHostname is the first status entry that has a hostname (placeholder or ip-only first)', () => {
+    const svc = (ingress: { hostname?: string; ip?: string }[]) => normalizeService({
+      metadata: { name: 'lb', namespace: 'd' }, spec: { type: 'LoadBalancer', ports: [] }, status: { loadBalancer: { ingress } },
+    });
+    expect(svc([{}, { hostname: 'x.elb.amazonaws.com' }]).lbHostname).toBe('x.elb.amazonaws.com');
+    expect(svc([{ ip: '1.2.3.4' }, { hostname: 'x.elb.amazonaws.com' }]).lbHostname).toBe('x.elb.amazonaws.com');
+    expect(svc([{ hostname: '' }, { hostname: 'y.elb.amazonaws.com' }]).lbHostname).toBe('y.elb.amazonaws.com');
+    expect(svc([{ ip: '1.2.3.4' }, {}]).lbHostname).toBeUndefined();
+    expect(svc([]).lbHostname).toBeUndefined();
+  });
+
   it('pod: metadata.labels passes through (gap L229 — the selector join side)', () => {
     const row = normalizePod({
       metadata: { name: 'p', namespace: 'ns', labels: { app: 'web', tier: 'fe' } },
@@ -363,4 +391,17 @@ describe('ingresses kind (K8s map)', () => {
     expect(row.lbHostname).toBe('');
     expect(row.className).toBe('');
   });
+});
+
+it('preserves immutable Pod/controller evidence separately from the friendly workload name', () => {
+  const pod = normalizePod({
+    metadata: { name: 'worker-abc', uid: 'uid-p', namespace: 'shop', ownerReferences: [
+      { name: 'annotation', kind: 'Job', uid: 'other', controller: false },
+      { name: 'orders-2026', kind: 'ReplicaSet', uid: 'uid-rs', controller: true },
+    ] },
+    status: { phase: 'Running', podIP: '10.1.2.3', podIPs: [{ ip: '10.1.2.3' }, { ip: 'fd00::3' }] },
+    spec: { hostNetwork: true },
+  });
+  expect(pod).toMatchObject({ uid: 'uid-p', controller: { kind: 'ReplicaSet', uid: 'uid-rs', name: 'orders-2026' },
+    podIPs: ['10.1.2.3', 'fd00::3'], hostNetwork: true });
 });

@@ -1,6 +1,6 @@
 # AWSops v2 P2 — async worker backbone (SQS → dispatcher → Step Functions → Lambda/Fargate).
 # EVERY resource here is gated by var.workers_enabled (default false → count=0 → zero AWS
-# resources and zero cost). Enable only in P2 W9. Design refs: ADR-029/030 + the P2 spec/plan.
+# resources and zero cost). Enable only in P2 W9. Design refs: ADR-005[legacy 029]/001 + the P2 spec/plan.
 # Key decisions baked in:
 #   C1  pg8000 vendored as a Lambda LAYER (worker/status/reaper import pg8000; dispatcher does not).
 #   C5  SFN role carries ecs:RunTask + StopTask + DescribeTasks + iam:PassRole + the .sync managed rule.
@@ -15,9 +15,29 @@ locals {
   acct         = data.aws_caller_identity.current.account_id
   # ai-cost aggregator gate — reuses the worker role/pg8000 layer/VPC, so it REQUIRES workers_enabled.
   act = var.workers_enabled && var.ai_cost_tracking_enabled ? 1 : 0
-  # datasource-diagnosis egress gate (ADR-039/041) — requires workers_enabled. Grants the worker role
+  # datasource-diagnosis egress gate (ADR-007[legacy 039]) — requires workers_enabled. Grants the worker role
   # lambda:InvokeFunction on the 5 connector Lambdas + sets the enabling env. Default false → 0/$0.
   dsd = var.workers_enabled && var.datasource_diagnosis_enabled ? 1 : 0
+  # connector_target_sync (ADR-023, owner-override 2026-11-05: one connector target create/update only).
+  # The gateway-target grant lives on a DEDICATED `<project>-connector-target-sync` Lambda with its own IAM
+  # role (outside the VPC; AgentCore control plane only). The worker job stays the ledgered entry point and
+  # only invokes that function (worker role: lambda:InvokeFunction on that one ARN). cts_lambda_keys are the
+  # connector Lambdas with a catalog TARGETS entry (external-obs or monitoring gateway); the function only
+  # ever points a target at one of these ARNs. Default false → 0 resources/IAM and no env/zip diff.
+  cts             = var.workers_enabled && var.agentcore_enabled && var.integrations_enabled && var.connector_target_sync_enabled ? 1 : 0
+  cts_lambda_keys = ["clickhouse-mcp", "prometheus-mcp", "loki-mcp", "tempo-mcp", "mimir-mcp"]
+  # WORKER Lambda env: enable flag + the dedicated function name (literal string, not a resource ref → no cycle).
+  cts_env_map = local.cts == 1 ? {
+    CONNECTOR_TARGET_SYNC_ENABLED  = "true"
+    CONNECTOR_TARGET_SYNC_FUNCTION = "${var.project}-connector-target-sync"
+  } : {}
+  # Dedicated connector-target-sync function env.
+  cts_function_env = local.cts == 1 ? {
+    CONNECTOR_TARGET_SYNC_ENABLED     = "true"
+    CONNECTOR_TARGET_GATEWAY_ROLE_ARN = aws_iam_role.agentcore[0].arn
+    CONNECTOR_TARGET_LAMBDAS = jsonencode({ for k in local.cts_lambda_keys :
+    k => aws_lambda_function.agent[k].arn if contains(keys(aws_lambda_function.agent), k) })
+  } : {}
   ds_connector_arns = [for k in ["prometheus", "loki", "tempo", "mimir", "clickhouse"] :
   "arn:aws:lambda:${var.region}:${local.acct}:function:${var.project}-agent-${k}-mcp"]
   # env that turns collect_datasources on (only when the gate is set) — kept as a list/map fragment so
@@ -32,6 +52,22 @@ locals {
     HOST_ACCOUNT_ID          = local.acct
     PROJECT                  = var.project
   } : {}
+  # The diagnosis loop is analysis-only and has a separate default-off gate.
+  # Bind self reads to the applied account, independently of datasource flags.
+  diagnosis_evidence_roles = var.diagnosis_evidence_loop_enabled && var.workers_enabled ? toset(["task"]) : toset([]) # report runs on Fargate only
+  diagnosis_evidence_env_map = var.diagnosis_evidence_loop_enabled ? {
+    DIAGNOSIS_EVIDENCE_LOOP_ENABLED    = "true"
+    DIAGNOSIS_HOST_ACCOUNT_ID          = local.acct
+    GRAPH_REBUILD_INTERVAL_MINS        = tostring(var.graph_rebuild_interval_mins)
+    INVENTORY_STALE_AFTER_MINUTES      = tostring(var.inventory_stale_after_minutes)
+    DIAGNOSIS_MEMBER_ROLE_ARNS         = jsonencode(var.diagnosis_member_role_arns)
+    DIAGNOSIS_NETWORK_EVIDENCE_ENABLED = tostring(var.diagnosis_network_evidence_enabled)
+    DIAGNOSIS_DNS_LOG_GROUP_ARNS       = jsonencode(var.diagnosis_dns_log_group_arns)
+  } : {}
+  diagnosis_evidence_env_list = [for name, value in local.diagnosis_evidence_env_map : { name = name, value = value }]
+  diagnosis_managed_env_list = var.diagnosis_managed_discovery_enabled ? [
+    { name = "DIAGNOSIS_MANAGED_DISCOVERY_ENABLED", value = "true" },
+  ] : []
   # finops_baseline (ADR-020, extends ADR-012) — deterministic FinOps baseline-recommendations rule
   # engine. Requires workers_enabled (validated in variables.tf); runs on the same Fargate worker as
   # the diagnosis job but as its own job type (finops_baseline), not inside it. Default false → 0
@@ -159,6 +195,11 @@ data "archive_file" "workers_src" {
     filename = "graph_querygen.py"
   }
   source {
+    # Provider shim imported by graph_querygen, signal_catalog_gen and insight/generate.
+    content  = file("${local.workers_src}/model_runtime.py")
+    filename = "model_runtime.py"
+  }
+  source {
     content  = file("${local.workers_src}/card_catalog.py")
     filename = "card_catalog.py"
   }
@@ -223,7 +264,7 @@ resource "aws_lambda_layer_version" "pg8000" {
   layer_name               = "${var.project}-pg8000"
   filename                 = data.archive_file.pg8000_layer[0].output_path
   source_code_hash         = data.archive_file.pg8000_layer[0].output_base64sha256
-  compatible_runtimes      = ["python3.12"]
+  compatible_runtimes      = ["python3.14"]
   compatible_architectures = ["arm64"]
 }
 
@@ -530,7 +571,7 @@ resource "aws_ecs_task_definition" "worker" {
         # _compliance fails fast with a clear error.
         { name = "STEAMPIPE_HOST", value = "steampipe.${var.project}.internal" },
         { name = "STEAMPIPE_SECRET_ARN", value = try(aws_secretsmanager_secret.steampipe[0].arn, "") }
-      ], local.ds_env_list, local.notify_worker_env_list, local.insight_env_list, local.sgr_env_list, local.npc_env_list) # + gated datasource env; + AI_INSIGHTS_ENABLED/ONBOARD_EKS_CLUSTERS when ai_insights_enabled; + AWS_ACCOUNT_ID/SG_RULE_ATHENA_BROKER_ARN when sg_rule_activity_enabled; + NETWORK_PATH_CHECK_ENABLED when network_path_check_enabled
+      ], local.ds_env_list, local.notify_worker_env_list, local.insight_env_list, local.sgr_env_list, local.npc_env_list, local.diagnosis_evidence_env_list, local.diagnosis_managed_env_list, local.model_env_list) # + model_provider env (models.tf, empty for mixed); + gated datasource env; + AI_INSIGHTS_ENABLED/ONBOARD_EKS_CLUSTERS when ai_insights_enabled; + AWS_ACCOUNT_ID/SG_RULE_ATHENA_BROKER_ARN when sg_rule_activity_enabled; + NETWORK_PATH_CHECK_ENABLED when network_path_check_enabled
       logConfiguration = {
         logDriver = "awslogs"
         options = {
@@ -552,7 +593,7 @@ resource "aws_lambda_function" "dispatcher" {
   count            = local.we
   function_name    = "${var.project}-dispatcher"
   role             = aws_iam_role.dispatcher[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "dispatcher.lambda_handler"
   filename         = data.archive_file.workers_src[0].output_path
@@ -566,10 +607,10 @@ resource "aws_lambda_function" "dispatcher" {
     # (this resource only exists when workers are on).
     variables = merge(
       { STATE_MACHINE_ARN = aws_sfn_state_machine.workers[0].arn },
-      # ADR-040/041: the remediation SM is OR-gated (re_or_iw) so the Slack DATA-write path can dispatch
+      # ADR-007[legacy 040]: the remediation SM is OR-gated (re_or_iw) so the Slack DATA-write path can dispatch
       # while remediation_enabled stays false. The dispatcher needs the SM ARN whenever EITHER plane is on.
       (var.remediation_enabled || var.integrations_write_enabled) ? { REMEDIATION_STATE_MACHINE_ARN = aws_sfn_state_machine.remediation[0].arn } : {},
-      # ADR-032: enabling the incident lifecycle adds the sibling incident SM ARN so the dispatcher
+      # ADR-006[legacy 032]: enabling the incident lifecycle adds the sibling incident SM ARN so the dispatcher
       # can route incident_stage jobs to it (dispatcher.py reads INCIDENT_STATE_MACHINE_ARN; empty
       # → the incident branch is inert). merge(base,{}) == base when off → byte-identical dispatcher
       # (no revision). Incident lifecycle REQUIRES workers_enabled=true (this Lambda only exists then).
@@ -583,7 +624,7 @@ resource "aws_lambda_function" "worker" {
   count            = local.we
   function_name    = "${var.project}-worker"
   role             = aws_iam_role.worker_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "worker_lambda.lambda_handler"
   filename         = data.archive_file.workers_src[0].output_path
@@ -605,7 +646,7 @@ resource "aws_lambda_function" "worker" {
       BEDROCK_REGION  = var.region
       # + gated DIAGNOSIS_SNS_TOPIC_ARN/APP_DOMAIN (notify) — empty map when diagnosis_notify_enabled=false → no env diff.
       }, local.notify_worker_env_map, local.ds_env_map, local.insight_env_map, local.gqg_env_map,
-    local.dsqg_env_map)
+    local.dsqg_env_map, local.cts_env_map, local.model_env)
     # + gated datasource env; + AI_INSIGHTS_ENABLED/ONBOARD_EKS_CLUSTERS when ai_insights_enabled;
     # + GRAPH_QUERYGEN_ENABLED when graph_querygen_enabled
   }
@@ -616,7 +657,7 @@ resource "aws_lambda_function" "status_updater" {
   count            = local.we
   function_name    = "${var.project}-status-updater"
   role             = aws_iam_role.worker_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "status_updater.lambda_handler"
   filename         = data.archive_file.workers_src[0].output_path
@@ -642,7 +683,7 @@ resource "aws_lambda_function" "reaper" {
   count            = local.we
   function_name    = "${var.project}-reaper"
   role             = aws_iam_role.worker_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "reaper.lambda_handler"
   filename         = data.archive_file.workers_src[0].output_path
@@ -820,7 +861,7 @@ resource "aws_iam_role_policy" "worker_diagnosis" {
   role  = aws_iam_role.worker_task[0].id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat(length(local.runtime_model_resources) > 0 ? [
       {
         # report.py invokes a global.anthropic.* Sonnet/Opus inference profile from var.region
         # (BEDROCK_REGION=var.region). Scoped to the Claude FM + global cross-region inference profiles.
@@ -828,7 +869,8 @@ resource "aws_iam_role_policy" "worker_diagnosis" {
         Effect   = "Allow"
         Action   = ["bedrock:InvokeModel"]
         Resource = local.runtime_model_resources
-      },
+      }
+      ] : [], [
       {
         # The diagnosis data sources (Cost Explorer, CloudWatch, X-Ray, Security Hub, CloudTrail) —
         # all read-only; each of these APIs requires Resource "*" (no resource-level scoping).
@@ -853,7 +895,7 @@ resource "aws_iam_role_policy" "worker_diagnosis" {
         Action   = ["s3:PutObject"]
         Resource = "${aws_s3_bucket.diagnosis_artifacts[0].arn}/diagnosis/*"
       }
-    ]
+    ])
   })
 }
 
@@ -865,6 +907,113 @@ resource "aws_iam_role_policy" "worker_diagnosis" {
 # ADR-020's CUR-absence scoping) and must not carry IAM ahead of code that uses it — this repo's
 # `worker_diagnosis` policy sets the "exactly the actions the worker calls" precedent this follows.
 # Add CE/COH/Budgets actions here ONLY when a rule that actually calls them ships.
+# Customer-managed (not inline): with up to 32 member ARNs and the all-regions read condition the
+# two diagnosis policies would push the worker task role toward IAM's 10,240-character aggregate
+# inline-policy quota. Each managed policy stays under its own 6,144-character limit.
+resource "aws_iam_policy" "worker_diagnosis_evidence" {
+  for_each = local.diagnosis_evidence_roles
+  name     = "${var.project}-worker-${each.key}-diagnosis-evidence-read"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = concat([{
+      Sid    = "DiagnosisProviderSizingReadOnly"
+      Effect = "Allow"
+      Action = [
+        "compute-optimizer:GetEC2InstanceRecommendations",
+        "compute-optimizer:GetRDSDatabaseRecommendations",
+      ]
+      Resource  = "*"
+      Condition = local.runtime_read_condition
+      }, {
+      Sid       = "DiagnosisMeasuredMemoryReadOnly"
+      Effect    = "Allow"
+      Action    = ["cloudwatch:ListMetrics"]
+      Resource  = "*"
+      Condition = local.runtime_read_condition
+      }], length(var.diagnosis_member_role_arns) > 0 ? [{
+      # ExternalId is enforced by the member trust policy (third-party) or replaced by its pin
+      # on this worker role (first-party, ADR-011); the worker sends a registered value.
+      Sid      = "DiagnosisRegisteredMemberReadOnly"
+      Effect   = "Allow"
+      Action   = ["sts:AssumeRole"]
+      Resource = var.diagnosis_member_role_arns
+      Condition = {
+        StringEquals = { "aws:RequestedRegion" = local.runtime_read_regions }
+      }
+    }] : [])
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "worker_diagnosis_evidence" {
+  for_each   = aws_iam_policy.worker_diagnosis_evidence
+  role       = aws_iam_role.worker_task[0].name
+  policy_arn = each.value.arn
+}
+
+resource "aws_iam_policy" "worker_diagnosis_managed" {
+  for_each = var.diagnosis_managed_discovery_enabled && var.diagnosis_evidence_loop_enabled && var.workers_enabled ? toset(["task"]) : toset([])
+  name     = "${var.project}-worker-${each.key}-diagnosis-managed-read"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "DiagnosisApplicationSignalsReadOnly"
+      Effect    = "Allow"
+      Action    = ["application-signals:ListServices", "application-signals:ListServiceDependencies"]
+      Resource  = "*"
+      Condition = local.runtime_read_condition
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "worker_diagnosis_managed" {
+  for_each   = aws_iam_policy.worker_diagnosis_managed
+  role       = aws_iam_role.worker_task[0].name
+  policy_arn = each.value.arn
+}
+
+resource "aws_iam_policy" "worker_diagnosis_network" {
+  for_each = var.diagnosis_network_evidence_enabled && var.diagnosis_evidence_loop_enabled && var.workers_enabled ? toset(["task"]) : toset([])
+  name     = "${var.project}-worker-${each.key}-diagnosis-network-read"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = concat([{
+      Sid       = "DiagnosisObservationDiscovery"
+      Effect    = "Allow"
+      Action    = ["route53resolver:ListResolverQueryLogConfigs", "route53resolver:ListResolverQueryLogConfigAssociations", "networkflowmonitor:ListMonitors", "rds:DescribeDBProxies", "rds:DescribeDBProxyTargets", "rds:DescribeDBClusters"]
+      Resource  = "*"
+      Condition = local.runtime_read_condition
+      }, {
+      # Query creation/cancellation affect analysis jobs only, never monitors or AWS workloads.
+      Sid    = "DiagnosisMonitorObservationQuery"
+      Effect = "Allow"
+      Action = ["networkflowmonitor:StartQueryMonitorTopContributors", "networkflowmonitor:GetQueryStatusMonitorTopContributors", "networkflowmonitor:GetQueryResultsMonitorTopContributors", "networkflowmonitor:StopQueryMonitorTopContributors"]
+      # Region is bounded by the condition; a per-region ARN fan-out would only add policy size.
+      Resource  = ["arn:aws:networkflowmonitor:*:${local.acct}:monitor/*"]
+      Condition = local.runtime_read_condition
+      }], length(var.diagnosis_dns_log_group_arns) > 0 ? [{
+      Sid       = "DiagnosisApprovedResolverLogRead"
+      Effect    = "Allow"
+      Action    = ["logs:StartQuery"]
+      Resource  = [for arn in var.diagnosis_dns_log_group_arns : endswith(arn, ":*") ? arn : "${arn}:*"]
+      Condition = local.runtime_read_condition
+      }, {
+      # GetQueryResults / StopQuery do not support resource-level scoping; results are reachable
+      # only by query ID, and queries can start only on the allowlisted groups above.
+      Sid       = "DiagnosisQueryResultsAndCancellation"
+      Effect    = "Allow"
+      Action    = ["logs:GetQueryResults", "logs:StopQuery"]
+      Resource  = ["*"]
+      Condition = local.runtime_read_condition
+    }] : [])
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "worker_diagnosis_network" {
+  for_each   = aws_iam_policy.worker_diagnosis_network
+  role       = aws_iam_role.worker_task[0].name
+  policy_arn = each.value.arn
+}
+
 resource "aws_iam_role_policy" "worker_finops_baseline" {
   count = local.fnb
   name  = "${var.project}-worker-finops-baseline-read"
@@ -893,13 +1042,14 @@ resource "aws_iam_role_policy" "worker_lambda_diagnosis" {
   role  = aws_iam_role.worker_lambda[0].id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat(length(local.runtime_model_resources) > 0 ? [
       {
         Sid      = "BedrockInvokeReadOnly"
         Effect   = "Allow"
         Action   = ["bedrock:InvokeModel"]
         Resource = local.runtime_model_resources
-      },
+      }
+      ] : [], [
       {
         Sid    = "DiagnosisDataSourcesReadOnly"
         Effect = "Allow"
@@ -921,7 +1071,7 @@ resource "aws_iam_role_policy" "worker_lambda_diagnosis" {
         Action   = ["s3:PutObject"]
         Resource = "${aws_s3_bucket.diagnosis_artifacts[0].arn}/diagnosis/*"
       }
-    ]
+    ])
   })
 }
 
@@ -975,7 +1125,7 @@ resource "aws_lambda_function" "finops_dispatcher" {
   count            = local.fnb
   function_name    = "${var.project}-finops-dispatcher"
   role             = aws_iam_role.worker_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "finops_dispatcher.lambda_handler"
   filename         = data.archive_file.finops_dispatcher_src[0].output_path
@@ -1021,7 +1171,7 @@ resource "aws_lambda_permission" "finops_dispatcher_events" {
   source_arn    = aws_cloudwatch_event_rule.finops_dispatcher[0].arn
 }
 
-# Datasource-diagnosis connector invoke (ADR-039/041 governed external egress) — GATED on
+# Datasource-diagnosis connector invoke (ADR-007[legacy 039] governed external egress) — GATED on
 # datasource_diagnosis_enabled (default false → not created → $0). Scoped to the 5 named connector
 # Lambda ARNs only (NO function:* wildcard). Granted to BOTH diagnosis compute roles (Fargate task +
 # worker Lambda), matching the worker_diagnosis / worker_lambda_diagnosis split above. The matching
@@ -1192,7 +1342,7 @@ resource "aws_lambda_function" "ai_cost_aggregator" {
   count            = local.act
   function_name    = "${var.project}-ai-cost-aggregator"
   role             = aws_iam_role.worker_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "ai_cost_aggregator.lambda_handler"
   filename         = data.archive_file.workers_src[0].output_path
@@ -1289,7 +1439,7 @@ resource "aws_lambda_function" "schedule_dispatcher" {
   count            = local.sched
   function_name    = "${var.project}-schedule-dispatcher"
   role             = aws_iam_role.worker_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "schedule_dispatcher.lambda_handler"
   filename         = data.archive_file.schedule_dispatcher_src[0].output_path
@@ -1401,7 +1551,7 @@ resource "aws_lambda_function" "diagnosis_digest" {
   count            = local.digest
   function_name    = "${var.project}-diagnosis-digest"
   role             = aws_iam_role.worker_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "diagnosis_digest.lambda_handler"
   filename         = data.archive_file.diagnosis_digest_src[0].output_path
@@ -1493,7 +1643,7 @@ resource "aws_lambda_function" "dsindex_dispatcher" {
   count            = local.dsd
   function_name    = "${var.project}-datasource-index-dispatcher"
   role             = aws_iam_role.worker_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "datasource_index_dispatcher.lambda_handler"
   filename         = data.archive_file.dsindex_dispatcher_src[0].output_path
@@ -1592,7 +1742,7 @@ resource "aws_lambda_function" "insight_dispatcher" {
   count            = local.aii
   function_name    = "${var.project}-insight-dispatcher"
   role             = aws_iam_role.worker_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "insight_dispatcher.lambda_handler"
   filename         = data.archive_file.insight_dispatcher_src[0].output_path
@@ -1636,4 +1786,113 @@ resource "aws_lambda_permission" "insight_dispatcher_events" {
   function_name = aws_lambda_function.insight_dispatcher[0].function_name
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.insight_dispatcher[0].arn
+}
+
+############################################################
+# connector_target_sync (ADR-023, owner-override 2026-11-05): create/update of the awsops-owned
+# external-obs and monitoring gateways' targets only (the catalog homes for the connector kinds). No Delete
+# action; the gateway ARN is pinned to the provision.py name; ListGateways is a read needed to resolve that
+# name to its id. The grant sits on a DEDICATED function role so no other worker job (datasource_index,
+# insight, LLM querygen, ...) shares it; the shared worker role only gets lambda:InvokeFunction on this
+# one function. The function runs outside the VPC (AgentCore control plane only; no Aurora).
+############################################################
+data "archive_file" "connector_target_sync" {
+  count       = local.cts
+  type        = "zip"
+  output_path = "${path.module}/.build/connector_target_sync.zip"
+  source {
+    content  = file("${local.workers_src}/connector_targets.py")
+    filename = "connector_targets.py"
+  }
+  source {
+    content  = file("${path.module}/../../scripts/v2/agentcore/catalog.py")
+    filename = "catalog.py"
+  }
+}
+
+resource "aws_iam_role" "connector_target_sync" {
+  count = local.cts
+  name  = "${var.project}-connector-target-sync"
+  assume_role_policy = jsonencode({
+    Version   = "2012-10-17"
+    Statement = [{ Effect = "Allow", Principal = { Service = "lambda.amazonaws.com" }, Action = "sts:AssumeRole" }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "connector_target_sync_logs" {
+  count      = local.cts
+  role       = aws_iam_role.connector_target_sync[0].name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy" "connector_target_sync" {
+  count = local.cts
+  name  = "${var.project}-connector-target-sync"
+  role  = aws_iam_role.connector_target_sync[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "ResolveOwnGateway"
+        Effect    = "Allow"
+        Action    = ["bedrock-agentcore:ListGateways"]
+        Resource  = "*"
+        Condition = local.runtime_region_condition
+      },
+      {
+        Sid    = "ManageOwnGatewayTargets"
+        Effect = "Allow"
+        Action = [
+          "bedrock-agentcore:GetGateway",
+          "bedrock-agentcore:ListGatewayTargets",
+          "bedrock-agentcore:GetGatewayTarget",
+          "bedrock-agentcore:CreateGatewayTarget",
+          "bedrock-agentcore:UpdateGatewayTarget",
+        ]
+        Resource = [for g in ["external-obs", "monitoring"] :
+        "arn:aws:bedrock-agentcore:${var.region}:${local.acct}:gateway/awsops-v2-${g}-gateway-*"]
+      },
+    ]
+  })
+}
+
+resource "aws_cloudwatch_log_group" "connector_target_sync" {
+  count             = local.cts
+  name              = "/aws/lambda/${var.project}-connector-target-sync"
+  retention_in_days = 14
+}
+
+resource "aws_lambda_function" "connector_target_sync" {
+  count            = local.cts
+  function_name    = "${var.project}-connector-target-sync"
+  role             = aws_iam_role.connector_target_sync[0].arn
+  runtime          = "python3.14"
+  architectures    = ["arm64"]
+  handler          = "connector_targets.lambda_handler"
+  filename         = data.archive_file.connector_target_sync[0].output_path
+  source_code_hash = data.archive_file.connector_target_sync[0].output_base64sha256
+  timeout          = 60
+  memory_size      = 256
+  depends_on = [
+    aws_cloudwatch_log_group.connector_target_sync,
+    aws_iam_role_policy_attachment.connector_target_sync_logs,
+  ]
+  environment {
+    variables = local.cts_function_env
+  }
+}
+
+resource "aws_iam_role_policy" "worker_lambda_invoke_connector_target_sync" {
+  count = local.cts
+  name  = "${var.project}-worker-lambda-invoke-connector-target-sync"
+  role  = aws_iam_role.worker_lambda[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "InvokeConnectorTargetSync"
+      Effect   = "Allow"
+      Action   = ["lambda:InvokeFunction"]
+      Resource = aws_lambda_function.connector_target_sync[0].arn
+    }]
+  })
 }

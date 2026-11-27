@@ -1,6 +1,7 @@
 'use client';
 import { useState, useEffect, useRef } from 'react';
 import { ArrowUp, X } from 'lucide-react';
+import { isComposingKey } from '@/lib/ime';
 import { parseSlash, matchCommands, SLASH_COMMANDS, type SlashCommand } from '@/lib/slash';
 import { useI18n } from '@/components/shell/LanguageProvider';
 import SlashMenu from './SlashMenu';
@@ -69,6 +70,7 @@ export default function Composer({
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (isComposingKey(e)) return;
     if (menuOpen && commands.length) {
       if (e.key === 'ArrowDown') { e.preventDefault(); setActive((i) => (Math.min(i, commands.length - 1) + 1) % commands.length); return; }
       if (e.key === 'ArrowUp') { e.preventDefault(); setActive((i) => (Math.min(i, commands.length - 1) - 1 + commands.length) % commands.length); return; }

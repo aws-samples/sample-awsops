@@ -546,8 +546,8 @@
     "message": "Start the guide",
     "description": "Closing CTA guide button"
   },
-  "home.cta.ctaDemo": {
-    "message": "See the live demo",
-    "description": "Closing CTA demo button"
+  "home.cta.ctaGithub": {
+    "message": "View the GitHub repo",
+    "description": "Closing CTA GitHub button"
   }
 }

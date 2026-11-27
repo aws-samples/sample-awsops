@@ -17,6 +17,15 @@ head_png_attachments > "$WORK/head-image-paths.bin" || { mark_image_coverage_fai
 mapfile -d '' -t HEAD_IMAGE_FILES < "$WORK/head-image-paths.bin"
 CODEX_IMAGE_ARGS=()
 for image in "${HEAD_IMAGE_FILES[@]}"; do CODEX_IMAGE_ARGS+=(--image "$image"); done
+# The CI identity is not authorized for codex web search: a review that tries it ends with
+# "stream disconnected before completion: Access denied: web search is not authorized for this
+# identity", no report and a BLOCKED panel. The review needs only the diff and the checkout, so turn
+# web search off when this codex build accepts the setting (an unknown value fails config load, so
+# an older build without it keeps the previous invocation).
+CODEX_CONFIG_ARGS=()
+if command -v codex >/dev/null 2>&1 && codex -c web_search=disabled features list >/dev/null 2>&1; then
+  CODEX_CONFIG_ARGS=(-c web_search=disabled)
+fi
 T="${PANEL_TIMEOUT:-300}"
 CLAUDE_TIMEOUT="${CLAUDE_PANEL_TIMEOUT:-600}"
 KILL_AFTER="${PANEL_KILL_AFTER:-10s}"
@@ -65,7 +74,7 @@ for lens_file in "${LENS_FILES[@]}"; do
   if command -v codex >/dev/null 2>&1; then
     ( try_panel "$SLOT/codex-$lens.md" "$SLOT/codex-$lens.err" \
         env AWS_REGION="${CODEX_AWS_REGION:-us-east-1}" AWS_DEFAULT_REGION="${CODEX_AWS_REGION:-us-east-1}" \
-        timeout --kill-after="$KILL_AFTER" "$T" codex exec -s read-only --skip-git-repo-check \
+        timeout --kill-after="$KILL_AFTER" "$T" codex "${CODEX_CONFIG_ARGS[@]}" exec -s read-only --skip-git-repo-check \
           "${CODEX_IMAGE_ARGS[@]}" -- "$LENS_PROMPT" ) &
   else echo "[skip] codex/$lens (binary absent)" >&2; : > "$SLOT/codex-$lens.md"; fi
 

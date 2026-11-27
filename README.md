@@ -4,7 +4,7 @@
 [![GitHub forks](https://img.shields.io/github/forks/Atom-oh/awsops?style=flat&logo=github)](https://github.com/Atom-oh/awsops/network/members)
 [![GitHub issues](https://img.shields.io/github/issues/Atom-oh/awsops)](https://github.com/Atom-oh/awsops/issues)
 [![License](https://img.shields.io/github/license/Atom-oh/awsops)](LICENSE)
-[![Version](https://img.shields.io/badge/version-v0.10.1-green.svg)](https://github.com/aws-samples/sample-awsops/releases/tag/v0.10.1)
+[![Version](https://img.shields.io/badge/version-v0.11.0-green.svg)](https://github.com/aws-samples/sample-awsops/releases/tag/v0.11.0)
 [![Last commit](https://img.shields.io/github/last-commit/Atom-oh/awsops)](https://github.com/Atom-oh/awsops/commits/main)
 [![PR Review](https://github.com/Atom-oh/awsops/actions/workflows/pr-review.yml/badge.svg)](https://github.com/Atom-oh/awsops/actions/workflows/pr-review.yml)
 
@@ -21,20 +21,20 @@ AWS + Kubernetes operations dashboard with real-time monitoring, a private Cloud
 
 ## Overview
 
-AWSops v2 is a single-pane operations dashboard for AWS and Kubernetes, rebuilt as a Terraform-based MSA: a private edge (CloudFront VPC Origin → internal ALB → ECS Fargate), Cognito + Lambda@Edge auth, Aurora Serverless v2 persistent state, AgentCore section agents for live AWS queries, and an OOM-safe async worker tier. The previous v1 architecture (single EC2, CDK, embedded Steampipe) is being decommissioned per ADR-016 — per ADR-016 (decision records are maintained in the private upstream repository).
+AWSops v2 is a single-pane operations dashboard for AWS and Kubernetes, rebuilt as a Terraform-based MSA: a private edge (CloudFront VPC Origin → internal ALB → ECS Fargate), Cognito + Lambda@Edge auth, Aurora Serverless v2 persistent state, AgentCore section agents for live AWS queries, and an OOM-safe async worker tier. The previous v1 architecture (single EC2, CDK, embedded Steampipe) is being retired per ADR-016: the decision (2026-07-09) and removal of its code from this tree (2026-07-12) are done, and the remaining infrastructure teardown is tracked in `docs/runbooks/v1-decommission.md` (decision records are maintained in the private upstream repository).
 
 ![AWSops v2 Architecture](images/awsops_arch_v2.png)
 
 ```
 Internet -> CloudFront (TLS, Lambda@Edge Cognito auth) -> VPC Origin (https-only) -> internal ALB (HTTPS)
-  -> ECS Fargate: Next.js 15 thin-BFF :3000 (arm64, no basePath) -> Aurora Serverless v2 (PG 17.9, node-pg)
+  -> ECS Fargate: Next.js thin-BFF :3000 (arm64, no basePath) -> Aurora Serverless v2 (PG 17.9, node-pg)
   -> Amazon Bedrock AgentCore: Runtime (Strands) + 9 section Gateways + Memory + Code Interpreter
   -> async workers: POST /api/jobs -> SQS -> Step Functions -> Lambda or Fargate worker
 ```
 
-Stats: 41 pages, 99 API routes, 110 components (`web/`), 21 consolidated ADRs, Terraform-managed (`terraform/foundation`, no CDK).
+Stats: 42 pages, 109 API routes, 129 components (`web/`), 21 consolidated ADRs, Terraform-managed (`terraform/foundation`, no CDK).
 
-> **No public ALB.** The edge is fully private — CloudFront reaches the ALB only through a VPC Origin, and the ALB only accepts traffic from CloudFront's managed security group. v2's posture is a **read-only ops dashboard + AI diagnosis**: AWS-resource mutation and autonomous remediation are FROZEN by design (ADR-005) — infra changes stay with the operator's own IaC/Change Manager, with one narrowly-scoped exception for self-healing service restarts (ADR-015). (ADR-019's SG-rules Athena role is a separate, ordinary GATED feature — ADR-019 concludes it sits inside the existing read-only invariant and is not an ADR-005 exception.)
+> **No public ALB.** The edge is fully private — CloudFront reaches the ALB only through a VPC Origin, and the ALB only accepts traffic from CloudFront's managed security group. v2's posture is a **read-only ops dashboard + AI diagnosis**: AWS-resource mutation and autonomous remediation are FROZEN by design (ADR-005) — infra changes stay with the operator's own IaC/Change Manager, with two narrowly-scoped owner-override exceptions: self-healing service restarts (ADR-015) and, when `connector_target_sync_enabled` is on, registering a just-added datasource's connector target on this stack's own AgentCore gateways (create/update only, never delete). (ADR-019's SG-rules Athena role is a separate, ordinary GATED feature — ADR-019 concludes it sits inside the existing read-only invariant and is not an ADR-005 exception.)
 
 ## Features
 
@@ -63,12 +63,12 @@ Stats: 41 pages, 99 API routes, 110 components (`web/`), 21 consolidated ADRs, T
 
 All 9 rows are gated behind `agentcore_enabled`/`integrations_enabled` (default `false` in a fresh clone/deploy — `plan` = No changes, $0); "live" here describes this project's actual running deployment, which has both flags on.
 
-Models: Claude Sonnet 5 (default), Opus 4.8 (deep analysis), Haiku 4.5 (fast/low-cost).
+Models: GPT-6 Luna for chat, GPT-6.1 Terra for Explore query generation with Claude Sonnet 5.5 fallback, Claude Sonnet 5.5 for AI Diagnosis and synthesis, Opus 5.5 as the AI Diagnosis Deep-tier option, and Haiku 5.5 for routing and short helpers. Exact Bedrock model IDs live in code (`agent/agent.py`, `web/lib/datasource-querygen.ts`, `scripts/v2/workers/diagnosis/report.py`, `web/lib/classifier.ts`).
 
 ## Prerequisites
 
-- Terraform >= 1.15 (S3 native state locking via `use_lockfile`)
-- Node.js >= 18 (configurator TUI, migration scripts)
+- Terraform at the exact version `scripts/v2/terraform-test.sh` checks (the same `terraform_version` the workflows install; S3 native state locking via `use_lockfile`)
+- Node.js at the major CI uses (`node-version` in `.github/workflows/merge-verify.yml`; configurator TUI, migration scripts, web)
 - Docker with buildx (arm64 image builds)
 - AWS CLI configured with credentials for the target account
 - kubectl and a kubeconfig, if onboarding EKS clusters
@@ -158,8 +158,20 @@ and [deployment runbook §5](docs/runbooks/dev-repo-setup.md#5-deploy-while-dns-
 | `diag_signal_querygen_enabled` | LLM fallback for ONE Explore diag-signal chip, only when a kind's deterministic catalog yields **zero ready rows** (a partial match is not topped up), and only for the chips — the diagnosis report never uses generated rows, and a flag-off read excludes them too. Separate from `graph_querygen_enabled`; both need `datasource_diagnosis_enabled`; `graph_querygen_enabled` ALSO requires `agentcore_enabled` (it provisions the Code Interpreter session IAM) |
 | `sg_rule_activity_enabled` | the SG Rules Athena-based traffic-evidence pipeline (`/network/security-groups/rules`) — the Athena/Glue broker Lambda, the daily `sg_rule_scan` worker job, and their Terraform (`sg-rules.tf`) |
 | `network_path_check_enabled` | the Network Path Check page/worker (`network-path.tf`) — `fetch_live_topology()` is now real (cache-only, from Aurora's synced topology), but a full live AWS/Kubernetes re-read at run time is still deliberately unimplemented, so `POST .../runs` still 503s `unimplemented` even with this flag on; see the Network Path Check changelog entry. A pod/node source's live identity confirmation additionally needs an EKS Access Entry — for the **worker task role** on a host-account cluster (this feature's `_default_k8s_get()` uses that role's own credentials directly when the source's account is the host account), or for the target account's **`AWSopsReadOnlyRole`** on a member-account cluster (the K8s GET is authenticated via that assumed session instead, so registering the worker task role there is a no-op and every GET 403s) — see [`docs/runbooks/network-path-eks-access.md`](docs/runbooks/network-path-eks-access.md) + `scripts/v2/eks/register-network-path-access.sh` (`ROLE_ARN=...` overrides the principal for the member-account case) |
+| `connector_target_sync_enabled` | registers a just-added ClickHouse/Prometheus/Loki/Tempo/Mimir datasource's connector on its AgentCore gateway in the background (`connector_target_sync` worker job, via a dedicated Lambda whose own role holds the gateway grant) so chat can call it without rerunning `make agentcore`. Creates/updates only this stack's own gateway targets, never deletes; an ADR-005 owner-override exception (ADR-023, 2026-11-05). Enable it on at most one awsops stack per account. Requires `workers_enabled`, `agentcore_enabled` and `integrations_enabled` |
+| `chat_section_handoff_enabled` | Default `false`. Lets a built-in chat section agent attach another section gateway's read-only tools in the same answer (`consult_section`, at most two extra sections; custom agents, tool allowlists and prompt overrides never hand off). An answer that used more than one gateway shows a "gateways used" card. See [AgentCore reference](docs/reference/05-agentcore.md#section-handoff) |
+| `diagnosis_evidence_loop_enabled` | Default `false`. Evidence-backed six-pillar diagnosis with bounded review and local fact rendering; Terraform requires `workers_enabled`. Analysis runs only with a supported Bedrock Claude diagnosis model under `mixed` or `bedrock_claude`; other providers produce `partial` reports without model calls. Analysis only; no remediation execution |
+| `diagnosis_network_evidence_enabled` | Default `false`; requires the evidence loop. Reads existing host-account Resolver logs, Network Flow Monitor and RDS Proxy configuration; creates no monitoring resources |
+| `diagnosis_managed_discovery_enabled` | Default `false`; requires the evidence loop and workers. Reads existing Application Signals service dependencies with a narrow read-only worker IAM grant; installs no instrumentation or Application Signals/Omni resources. The private Omni adapter remains inactive |
+| `topology_entities_enabled` | Default `false`. Exposes the published host service graph to Web and the inventory-read tool. The standalone migration is required before the next Web release even when the flag remains off. For activation, synchronize the dedicated reader secret, enable its database login and verify the snapshot. [Pilot runbook](docs/runbooks/graph-read-contract.md#unified-service-snapshot-pilot)  Full dev plan override: `CI_TOPOLOGY_ENTITIES_ENABLED_DEV`. |
+| `diagnosis_omni_spaces` | Reserved input, must stay `{}`; Terraform rejects every nonempty map. Omni has no production call path or worker credential permission pending [verified IAM scope](docs/reference/diagnosis-discovery.md#managed-provider-activation-preflight) |
+| `diagnosis_dns_log_group_arns` | Default `[]`, at most eight exact host-account log-group ARNs; network evidence also verifies each group's active Resolver/VPC association |
+| `diagnosis_member_role_arns` | Default `[]`, at most 32 exact registered member `AWSopsReadOnlyRole` ARNs; requires the evidence loop and target trust for the worker role; the worker sends the registered ExternalId when the account has one (ADR-011) |
+| `model_provider` | model family for chat, query generation, synthesis, routing and AI Diagnosis: `mixed` (default, unchanged), `bedrock_claude`, `bedrock_openai` or `anthropic_api` (Claude through the Anthropic API; needs `anthropic_api_key_secret_arn`, a Secrets Manager secret holding the key). Bedrock model grants shrink to the chosen family; `anthropic_api` grants only that secret. Under `anthropic_api` the AI usage/cost pages, which read Bedrock invocation logs, show no usage. See `docs/runbooks/model-provider.md` |
 
-Runtime IAM narrowing is independent of these opt-in flags: the next apply changes permissions on already-enabled stacks, including main (three web SSM parameters, runtime discovery/token actions, own-cluster task control and Claude-only models). Known regions include future opt-ins; this is not live-access proof.
+Runtime IAM narrowing is independent of these opt-in flags: the next apply changes permissions on already-enabled stacks, including main (three web SSM parameters, runtime discovery/token actions, own-cluster task control and the models of the selected `model_provider` family). Known regions include future opt-ins; this is not live-access proof.
+
+**`CUSTOM_MCP_ENABLED`** is a separate exact-`true` environment gate in both web and AgentCore; it defaults off. Administrator-managed custom MCP registration is preparation while ADR-022 is Proposed. Acceptance and a separately reviewed activation release must precede enabling it. The next apply adds read-only `DescribeSecret` permission for the registration namespace on already-enabled stacks. Terraform/task-definition/provisioner activation wiring belongs to the future release. Native bundled datasource query connectors keep their existing controls. Denied applicable MCP declarations retain tool ceilings even when the gate is off; chat reports policy denial, selected disablement or lookup failure without exposing credentials. See [custom MCP governance](docs/runbooks/custom-mcp-governance.md).
 
 One more ADR-017 gate is **not** a terraform flag: **`CLICKHOUSE_OFFICIAL_MCP`** is an AgentCore runtime env recorded by the provisioner (`CLICKHOUSE_OFFICIAL_MCP=true make agentcore`) that embeds the official `mcp-clickhouse` as a stdio subprocess in the runtime container. It is **FROZEN / do-not-enable**: the stdio path has no replacement for the in-house lambda's table-function SSRF guard, so unfreezing requires both the technical precondition and a new ADR + multi-AI panel + dated owner-override (ADR-017 §Status, BASELINE §2).
 
@@ -176,7 +188,7 @@ AgentCore's own config (runtime ARN, Memory ID, Code Interpreter ID) is written 
 
 ```
 awsops/
-  web/                    # Next.js 15 thin-BFF: 41 pages, 99 API routes, 110 components
+  web/                    # Next.js thin-BFF: 42 pages, 109 API routes, 129 components
   agent/                  # Strands Agent (Runtime source) + MCP Lambda tool sources
   terraform/foundation/  # single Terraform root: network, edge, auth, data, workload, ai, workers, eks
   scripts/v2/             # configure/deploy/migrate/agentcore/workers tooling (all Node.js/Python)
@@ -200,8 +212,8 @@ The required migration, web connection-phase and agent tool-policy history Postg
 they use bare `docker` on PATH (the documented exceptions to optional legacy itests).
 The web connection and policy suites also require `npm ci --prefix web` for the locked driver and TypeScript.
 These suites and their offline companion use no AWS credentials.
-Authenticated deployment smoke tests require curl, OpenSSL, Python 3 with PyYAML and Terraform **1.15.7**;
-their offline variable fixture needs no providers. Terraform mock tests require **1.15.7** and installed/cached
+Authenticated deployment smoke tests require curl, OpenSSL, Python 3 with PyYAML and the pinned Terraform version;
+their offline variable fixture needs no providers. Terraform mock tests require that version and installed/cached
 providers; the helper copies only tracked working-tree files, runs `init -backend=false`, validates
 and tests without a real backend. Missing deployment-suite prerequisites fail the shared runner;
 only its final fmt/validate diagnostics are informational.
@@ -224,13 +236,13 @@ bash tests/run-all.sh             # repo-wide hook/structure tests + agent Pytho
 ```
 
 The private migration fixture command includes runtime, controller, workflow and mocked-plan
-checks. Controller/workflow checks also require Python 3 with PyYAML, boto3/botocore (`pip install -r agent/requirements.txt`) and Terraform **1.15.7**.
+checks. Controller/workflow checks also require Python 3 with PyYAML, boto3/botocore (`pip install -r agent/requirements.txt`) and the pinned Terraform version.
 See [merge verification](docs/v2-merge-verification.md) for the complete CI scope,
 including the conditional documentation build and full presentation archive check.
 
 ## API Documentation
 
-The 99 API routes live under `web/app/api/`. Key routes: `health` (public), `stream` (SSE chat), `db` (Aurora ping), `jobs` (+`/[id]`, async job submission/status), `security`, `compliance`, `auth/login`. See the docs site for user-facing guidance.
+The 109 API routes live under `web/app/api/`. Key routes: `health` (public), `stream` (SSE chat), `db` (Aurora ping), `jobs` (+`/[id]`, async job submission/status), `security`, `compliance`, `auth/login`. See the docs site for user-facing guidance.
 
 ## Contributing
 
@@ -261,20 +273,20 @@ Licensed under the MIT License. See [LICENSE](LICENSE) for details.
 
 ## 개요
 
-AWSops v2는 AWS와 Kubernetes를 위한 단일 화면 운영 대시보드로, Terraform 기반 MSA로 재구축되었습니다: 비공개 엣지(CloudFront VPC Origin → 내부 ALB → ECS Fargate), Cognito + Lambda@Edge 인증, Aurora Serverless v2 영속 상태, 라이브 AWS 조회를 수행하는 AgentCore 섹션 에이전트, OOM-안전 비동기 워커 계층으로 구성됩니다. 이전 v1 아키텍처(단일 EC2, CDK, 내장 Steampipe)는 ADR-016에 따라 폐기 진행 중입니다 — (결정 기록은 비공개 upstream 리포지토리에서 관리됩니다).
+AWSops v2는 AWS와 Kubernetes를 위한 단일 화면 운영 대시보드로, Terraform 기반 MSA로 재구축되었습니다: 비공개 엣지(CloudFront VPC Origin → 내부 ALB → ECS Fargate), Cognito + Lambda@Edge 인증, Aurora Serverless v2 영속 상태, 라이브 AWS 조회를 수행하는 AgentCore 섹션 에이전트, OOM-안전 비동기 워커 계층으로 구성됩니다. 이전 v1 아키텍처(단일 EC2, CDK, 내장 Steampipe)는 ADR-016에 따라 폐기 중입니다. 결정(2026-07-09)과 이 트리의 코드 제거(2026-07-12)는 완료되었고, 남은 인프라 정리는 `docs/runbooks/v1-decommission.md`에서 추적합니다 (결정 기록은 비공개 upstream 리포지토리에서 관리됩니다).
 
 ![AWSops v2 Architecture](images/awsops_arch_v2.png)
 
 ```
 Internet -> CloudFront (TLS, Lambda@Edge Cognito 인증) -> VPC Origin (https-only) -> 내부 ALB (HTTPS)
-  -> ECS Fargate: Next.js 15 thin-BFF :3000 (arm64, basePath 없음) -> Aurora Serverless v2 (PG 17.9, node-pg)
+  -> ECS Fargate: Next.js thin-BFF :3000 (arm64, basePath 없음) -> Aurora Serverless v2 (PG 17.9, node-pg)
   -> Amazon Bedrock AgentCore: Runtime (Strands) + 9 섹션 Gateway + Memory + Code Interpreter
   -> 비동기 워커: POST /api/jobs -> SQS -> Step Functions -> Lambda 또는 Fargate 워커
 ```
 
-현황: 41 페이지, 99 API 라우트, 110 컴포넌트(`web/`), 21개 통합 ADR, Terraform 관리(`terraform/foundation`, CDK 없음).
+현황: 42 페이지, 109 API 라우트, 129 컴포넌트(`web/`), 21개 통합 ADR, Terraform 관리(`terraform/foundation`, CDK 없음).
 
-> **공개 ALB 없음.** 엣지는 완전히 비공개입니다 — CloudFront는 VPC Origin을 통해서만 ALB에 도달하고, ALB는 CloudFront 관리형 보안 그룹의 트래픽만 허용합니다. v2의 자세는 **read-only 운영 대시보드 + AI 진단**입니다: AWS 리소스 변경·자율 조치는 설계상 FROZEN(ADR-005) — 인프라 변경은 운영자 자신의 IaC/Change Manager가 담당하며, 자가치유 서비스 재시작 하나만 좁게 예외 허용됩니다(ADR-015). (ADR-019의 SG-rules Athena role은 별개의 일반 GATED 기능입니다 — ADR-019는 이것이 기존 read-only 불변식 내부에 있다고 결론 내리며, ADR-005 예외가 아닙니다.)
+> **공개 ALB 없음.** 엣지는 완전히 비공개입니다 — CloudFront는 VPC Origin을 통해서만 ALB에 도달하고, ALB는 CloudFront 관리형 보안 그룹의 트래픽만 허용합니다. v2의 자세는 **read-only 운영 대시보드 + AI 진단**입니다: AWS 리소스 변경·자율 조치는 설계상 FROZEN(ADR-005) — 인프라 변경은 운영자 자신의 IaC/Change Manager가 담당하며, 좁게 한정된 owner-override 예외는 두 가지뿐입니다: 자가치유 서비스 재시작(ADR-015), 그리고 `connector_target_sync_enabled`가 켜졌을 때 방금 추가한 데이터소스의 커넥터 target을 이 스택 자신의 AgentCore gateway에 등록하는 것(생성·갱신만, 삭제 없음). (ADR-019의 SG-rules Athena role은 별개의 일반 GATED 기능입니다 — ADR-019는 이것이 기존 read-only 불변식 내부에 있다고 결론 내리며, ADR-005 예외가 아닙니다.)
 
 ## 주요 기능
 
@@ -303,12 +315,12 @@ Terraform(`ai.tf`)에 9개 섹션 게이트웨이가 정의되어 있으며, 각
 
 9개 행 모두 `agentcore_enabled`/`integrations_enabled` 뒤에 게이트되어 있습니다(새로 클론·배포 시 기본값은 `false` — `plan` = No changes, $0). 여기서 "live"는 이 프로젝트의 실제 운영 배포 기준이며, 그 배포는 두 플래그 모두 켜져 있습니다.
 
-모델: Claude Sonnet 5(기본), Opus 4.8(심층 분석), Haiku 4.5(빠르고 저렴).
+모델: 채팅은 GPT-6 Luna, Explore 쿼리 생성은 GPT-6.1 Terra와 Claude Sonnet 5.5 fallback, AI 진단·합성은 Claude Sonnet 5.5를 씁니다. AI 진단 Deep 단계에서는 Opus 5.5를 선택할 수 있으며, 라우팅·분류와 짧은 보조 작업은 Haiku 5.5를 씁니다. 정확한 Bedrock 모델 ID는 코드(`agent/agent.py`, `web/lib/datasource-querygen.ts`, `scripts/v2/workers/diagnosis/report.py`, `web/lib/classifier.ts`)에 있습니다.
 
 ## 사전 요구 사항
 
-- Terraform >= 1.15 (S3 native state locking, `use_lockfile`)
-- Node.js >= 18 (구성 TUI, 마이그레이션 스크립트)
+- `scripts/v2/terraform-test.sh`가 검사하는 정확한 버전의 Terraform (워크플로가 설치하는 `terraform_version`과 같음; S3 native state locking, `use_lockfile`)
+- CI와 같은 메이저 버전의 Node.js (`.github/workflows/merge-verify.yml`의 `node-version`; 구성 TUI, 마이그레이션 스크립트, web)
 - Docker with buildx (arm64 이미지 빌드)
 - 대상 계정 자격 증명이 설정된 AWS CLI
 - EKS 클러스터를 온보딩한다면 kubectl 및 kubeconfig
@@ -393,8 +405,20 @@ apply에서 바꿀 수 없습니다. 기본 false인 일반 full 계획도 DNS �
 | `diag_signal_querygen_enabled` | Explore diag-signal 칩 **1개**의 LLM 폴백 — 그 kind의 결정론 카탈로그가 **ready 0행**일 때만 발동(부분 매칭은 보충하지 않음), 생성 행은 칩 전용(진단 리포트 미사용, 플래그 OFF 면 읽기에서도 제외). `graph_querygen_enabled`와 **별개**, 둘 다 `datasource_diagnosis_enabled` 선행. `graph_querygen_enabled`는 **추가로** `agentcore_enabled`도 선행(Code Interpreter 세션 IAM 프로비저닝 때문) |
 | `sg_rule_activity_enabled` | SG Rules Athena 기반 트래픽 근거 파이프라인(`/network/security-groups/rules`) — Athena/Glue 브로커 Lambda, 일일 `sg_rule_scan` 워커 job, 관련 Terraform(`sg-rules.tf`) |
 | `network_path_check_enabled` | Network Path Check 페이지/워커(`network-path.tf`) — `fetch_live_topology()`는 이제 실제 구현이다(캐시된 Aurora 토폴로지 기반), 다만 run 시점의 실시간 AWS/Kubernetes 재조회는 여전히 의도적으로 미구현이라 이 플래그가 켜져 있어도 `POST .../runs`는 여전히 503 `unimplemented`를 반환한다; Network Path Check CHANGELOG 항목 참고. pod/node 소스의 live identity 확인에는 EKS Access Entry가 추가로 필요하다 — 소스 계정이 호스트 계정이면 **워커 task role**용(이 경우 `_default_k8s_get()`이 그 role 자신의 자격증명을 직접 사용), 멤버 계정이면 대상 계정의 **`AWSopsReadOnlyRole`**용(그 assume된 세션으로 K8s GET을 인증하므로, 워커 task role을 등록해도 아무 효과가 없고 모든 GET이 403된다) — [`docs/runbooks/network-path-eks-access.md`](docs/runbooks/network-path-eks-access.md) + `scripts/v2/eks/register-network-path-access.sh`(멤버 계정의 경우 `ROLE_ARN=...`로 principal 오버라이드) 참고 |
+| `connector_target_sync_enabled` | 방금 추가한 ClickHouse/Prometheus/Loki/Tempo/Mimir 데이터소스의 커넥터를 백그라운드(`connector_target_sync` 워커 job, gateway 권한을 자체 role로 보유한 전용 Lambda 경유)에서 해당 AgentCore gateway에 등록해, `make agentcore`를 다시 실행하지 않아도 채팅에서 호출할 수 있게 한다. 이 스택 자신의 gateway target만 생성·갱신하며 삭제하지 않는다(ADR-005 owner-override 예외 ADR-023, 2026-11-05). 계정당 awsops 스택 하나에서만 켠다. `workers_enabled`, `agentcore_enabled`, `integrations_enabled` 선행 |
+| `chat_section_handoff_enabled` | 기본 `false`. 기본 제공 채팅 섹션 에이전트가 같은 답변 안에서 다른 섹션 게이트웨이의 읽기 전용 도구를 붙여 조회한다(`consult_section`, 추가 섹션 최대 2개, 커스텀 에이전트·도구 허용 목록·프롬프트 재정의 요청은 제외). 두 개 이상의 게이트웨이를 사용한 답변에는 사용한 게이트웨이 카드가 표시된다. [AgentCore 참조](docs/reference/05-agentcore.md#section-handoff) 참고 |
+| `diagnosis_evidence_loop_enabled` | 기본 `false`. 근거 기반 6개 필러 진단, 제한된 리뷰와 로컬 사실 렌더링. Terraform은 `workers_enabled`를 요구함. 분석은 `mixed` 또는 `bedrock_claude`의 지원되는 Bedrock Claude 진단 모델에서만 실행하며, 다른 제공자는 모델 호출 없이 `partial` 리포트를 생성함. 분석 전용이며 복구를 실행하지 않음 |
+| `diagnosis_network_evidence_enabled` | 기본 `false`, 근거 루프 필요. 기존 호스트 계정 Resolver 로그·Network Flow Monitor·RDS Proxy 설정을 읽으며 모니터링 리소스를 생성하지 않음 |
+| `diagnosis_managed_discovery_enabled` | 기본 `false`, 근거 루프와 워커 필요. 워커에 좁은 읽기 전용 IAM 권한을 부여해 기존 Application Signals 서비스 의존성을 읽으며, 계측이나 Application Signals/Omni 리소스를 생성하지 않음. Omni 내부 어댑터는 비활성 상태 |
+| `topology_entities_enabled` | 기본값은 `false`입니다. 발행된 호스트 서비스 그래프를 Web과 inventory-read 도구에서 조회합니다. 플래그가 꺼져 있어도 다음 Web 릴리스 전에 standalone 마이그레이션이 필요합니다. 활성화 시 전용 자격 증명 동기화, DB 로그인 설정, 스냅샷 검증을 완료하세요. [파일럿 런북](docs/runbooks/graph-read-contract.md#unified-service-snapshot-pilot)  dev 전체 계획 전용 변수: `CI_TOPOLOGY_ENTITIES_ENABLED_DEV`. |
+| `diagnosis_omni_spaces` | 예약 입력으로 `{}`만 허용하며 비어 있지 않은 맵은 Terraform이 거부함. [IAM 범위 검증](docs/reference/diagnosis-discovery.md#managed-provider-activation-preflight) 전까지 Omni 운영 호출 경로와 워커 자격 증명 권한은 없음 |
+| `diagnosis_dns_log_group_arns` | 기본 `[]`, 정확한 호스트 계정 로그 그룹 ARN 최대 8개. 네트워크 근거는 각 그룹의 활성 Resolver/VPC 연결도 검증 |
+| `diagnosis_member_role_arns` | 기본 `[]`, 등록된 멤버 `AWSopsReadOnlyRole`의 정확한 ARN 최대 32개. 근거 루프와 대상 역할의 워커 역할 신뢰 필요. 계정 등록에 ExternalId가 있으면 워커가 이를 함께 보냄(ADR-011) |
+| `model_provider` | 채팅·쿼리 생성·합성·라우팅·AI 진단에 쓸 모델 계열: `mixed`(기본값, 기존과 동일), `bedrock_claude`, `bedrock_openai`, `anthropic_api`(Anthropic API의 Claude; 키를 담은 Secrets Manager 시크릿 `anthropic_api_key_secret_arn` 필요). Bedrock 모델 권한은 선택한 계열로 좁혀지고 `anthropic_api`는 해당 시크릿 읽기만 부여합니다. `anthropic_api`에서는 Bedrock 호출 로그를 읽는 AI 사용량·비용 화면에 사용량이 표시되지 않습니다. `docs/runbooks/model-provider.md` 참고 |
 
-런타임 IAM 축소는 위 선택 플래그와 무관하며 main 등 기존 활성 스택의 다음 apply에 적용됩니다(웹 SSM 세 파라미터·런타임 조회/토큰 동작·자체 클러스터 태스크 제어·Claude 모델). 알려진 리전에는 이후 opt-in 리전도 포함되며 실제 접근 성공의 증거는 아닙니다.
+런타임 IAM 축소는 위 선택 플래그와 무관하며 main 등 기존 활성 스택의 다음 apply에 적용됩니다(웹 SSM 세 파라미터·런타임 조회/토큰 동작·자체 클러스터 태스크 제어·선택한 `model_provider` 계열 모델). 알려진 리전에는 이후 opt-in 리전도 포함되며 실제 접근 성공의 증거는 아닙니다.
+
+**`CUSTOM_MCP_ENABLED`**는 web과 AgentCore 양쪽에서 정확한 `true` 값만 허용하는 별도 환경변수 게이트이며 기본 비활성입니다. ADR-022가 Proposed인 동안 관리자 custom MCP 등록은 준비 단계입니다. 활성화에는 정책 승인과 별도로 검토한 활성화 릴리스가 선행되어야 합니다. 다음 apply는 이미 활성화된 스택에 등록 네임스페이스의 읽기 전용 `DescribeSecret` 권한을 추가합니다. Terraform·태스크 정의·provisioner의 활성화 배선은 향후 릴리스 범위입니다. 기본 데이터소스 쿼리 커넥터는 기존 통제를 유지합니다. 해당 계정의 거부된 MCP 선언은 게이트가 꺼져 있어도 도구 상한을 유지하며, 채팅은 자격증명 노출 없이 정책 거부·선택한 연결의 비활성·조회 실패를 표시합니다. [custom MCP 거버넌스](docs/runbooks/custom-mcp-governance.md)를 참고하세요.
 
 ADR-017에는 terraform flag가 **아닌** 게이트가 하나 더 있습니다: **`CLICKHOUSE_OFFICIAL_MCP`** — provisioner가 기록하는 AgentCore 런타임 env(`CLICKHOUSE_OFFICIAL_MCP=true make agentcore`)로, 공식 `mcp-clickhouse`를 런타임 컨테이너에 stdio 서브프로세스로 내장합니다. **FROZEN / do-not-enable**입니다: 자체 람다의 테이블 함수 SSRF 가드에 대응하는 방어가 stdio 경로에 없어, 해제에는 기술 선결조건과 새 ADR + 멀티-AI 패널 + 날짜박힌 owner-override가 모두 필요합니다(ADR-017 §Status, BASELINE §2).
 
@@ -411,7 +435,7 @@ AgentCore 자체 설정(runtime ARN, Memory ID, Code Interpreter ID)은 provisio
 
 ```
 awsops/
-  web/                      # Next.js 15 thin-BFF: 41 페이지, 99 API 라우트, 110 컴포넌트
+  web/                      # Next.js thin-BFF: 42 페이지, 109 API 라우트, 129 컴포넌트
   agent/                    # Strands Agent(Runtime 소스) + MCP Lambda 도구 소스
   terraform/foundation/  # 단일 Terraform 루트: network, edge, auth, data, workload, ai, workers, eks
   scripts/v2/               # configure/deploy/migrate/agentcore/workers 도구(전부 Node.js/Python)
@@ -435,9 +459,9 @@ Private migration 테스트는 `npm ci --prefix scripts/v2 --ignore-scripts --no
 Docker 부재 시 gate가 실패하고 PATH의 `docker`를 직접 사용합니다. 웹 연결·정책 테스트는 잠긴 드라이버와
 TypeScript를 위해 `npm ci --prefix web`도 필요합니다. 이 테스트들과 오프라인 companion은
 AWS 자격증명을 사용하지 않습니다.
-인증 배포 smoke 테스트는 curl·OpenSSL·Python 3·PyYAML·Terraform **1.15.7**을 필수로 요구하며,
+인증 배포 smoke 테스트는 curl·OpenSSL·Python 3·PyYAML·고정된 버전의 Terraform을 필수로 요구하며,
 누락 시 공통 러너도 실패합니다. 오프라인 변수 fixture에는 provider가 필요하지 않습니다.
-마지막 fmt/validate 진단만 참고용입니다. Terraform mock 테스트에는 **1.15.7**과
+마지막 fmt/validate 진단만 참고용입니다. Terraform mock 테스트에는 같은 버전과
 설치/캐시된 provider가 필요합니다. 도우미는 추적된
 작업 파일만 복사해 `init -backend=false`, validate, test를 실행하며 실제 backend를 사용하지 않습니다.
 필수 `test_ci_web_read.py`·`test_ci_web_deploy.py` 테스트는 Python 3.12와 Linux `/proc`, POSIX 프로세스 그룹, `os.geteuid`가 필요하며 외부 provider를 모의하므로 AWS CLI·gh·curl·jq를 실행하지 않습니다. 필수 `test_ci_web_workflow.py` 테스트에는 PyYAML과 Bash도 필요합니다. Deploy Web은 컨트롤러를 사용하고 웹 배포가 호출하는 마이그레이션에 자동 SQL 검사를 강제합니다. 자세한 내용은 `docs/runbooks/release-safety-primitives.md`를 참고하세요.
@@ -459,13 +483,13 @@ bash tests/run-all.sh             # repo 전반 hook/structure 테스트 + agent
 ```
 
 위 private migration fixture 명령은 runtime·controller·workflow·모의 계획 검사를 포함합니다.
-controller/workflow 검사에는 Python 3·PyYAML·boto3/botocore (`pip install -r agent/requirements.txt`)·Terraform **1.15.7**도 필요합니다.
+controller/workflow 검사에는 Python 3·PyYAML·boto3/botocore (`pip install -r agent/requirements.txt`)·고정된 버전의 Terraform도 필요합니다.
 조건부 문서 빌드와 프레젠테이션 전체 아카이브 검증을 포함한 CI 범위는
 [머지 검증 가이드](docs/v2-merge-verification.md)를 참고하세요.
 
 ## API 문서
 
-99개 API 라우트가 `web/app/api/`에 있습니다. 주요 라우트: `health`(공개), `stream`(SSE 채팅), `db`(Aurora ping), `jobs`(+`/[id]`, 비동기 작업 제출/상태), `security`, `compliance`, `auth/login`. 사용자 가이드는 docs site를 참고하세요.
+109개 API 라우트가 `web/app/api/`에 있습니다. 주요 라우트: `health`(공개), `stream`(SSE 채팅), `db`(Aurora ping), `jobs`(+`/[id]`, 비동기 작업 제출/상태), `security`, `compliance`, `auth/login`. 사용자 가이드는 docs site를 참고하세요.
 
 ## 기여 방법
 

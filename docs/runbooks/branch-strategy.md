@@ -3,6 +3,11 @@
 Related files / 관련 파일: `.github/workflows/{deploy-web,terraform,guard-main-prs}.yml`,
 `docs/runbooks/dev-repo-setup.md` (CI/OIDC bring-up)
 
+Adding a preview user requires explicit secret-selection entries in
+`.github/workflows/deploy-web.yml`, `terraform.yml`, and `deploy-agentcore.yml`,
+alongside the existing branch triggers, target guards and OIDC trust setup.
+Creating `TF_*_PREVIEW_<USER>` secrets alone does not enable a new branch.
+
 ## The shape / 전체 구조 — single public repo / 단일 공개 리포
 
 Everything lives in **`aws-samples/sample-awsops`** (public). All branches are publicly
@@ -60,28 +65,9 @@ user's branch (or short-lived branches merged into it), then flows up via PR to
 
 ## Oversized promotion review
 
-The required AI review admits a complete filtered diff up to 6,000 lines/128 KiB
-and up to 32 supported HEAD images under the existing byte/codec bounds. An
-accumulated dev-to-main promotion can exceed these bounds even if each feature PR
-was independently reviewed. It stays blocked; rerunning unchanged input cannot
-restore missing scope, and historical feature-review comments are not proof of
-complete review of the current promotion HEAD.
+The required `AI Code Review` uses the official Claude Code Action on Amazon Bedrock. It reads changes from the promotion's exact merge base and HEAD. Large changes are divided among GitHub Actions jobs. Every job must return a complete review of its assigned pages, and every required image must be available for inspection. A missing verdict or a CRITICAL or MAJOR finding blocks the promotion. Open the linked run summary for the findings.
 
-For the `samples` repository, **dev is the default branch**. Verify the live setting
-with `gh api repos/aws-samples/sample-awsops --jq .default_branch` before rollout.
-An ordinary reviewed PR merged into dev therefore updates the trusted workflow for
-subsequent reviews, including main-targeted promotions; the workflow need not reach
-main first. Do not assume this activation path for another repository whose default
-branch is main. Its pre-provisioned, explicitly approved SHA-pinned recovery path
-must authorize the workflow change under the existing protections.
-
-Before continuing such a promotion, implement and review complete bounded batching
-or authenticated exact-commit coverage reuse through an ordinary PR to dev. Neither
-exists yet. The same protected workflow must then review the full promotion scope
-and integration changes on its current HEAD. Do not bypass required checks, alter
-main to hide changes, or publish the release tag while this prerequisite is pending.
-Smaller promotion intervals can prevent future accumulation, but cannot repair the
-already accumulated diff. Details: [review input admission](pr-review-head-images.md#review-input-admission-and-panel-size).
+The workflow for automatic reviews comes from the repository's default branch. Verify that branch with `gh api repos/aws-samples/sample-awsops --jq .default_branch` before changing the workflow. Land the workflow through an ordinary protected PR to dev. Its next eligible event uses the reviewed workflow. Tag only the successful main merge as described below. [Review inputs and limits](pr-review-head-images.md)
 
 ## Version and tag on main promotion
 

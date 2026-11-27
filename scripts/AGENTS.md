@@ -1,4 +1,4 @@
-<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: f3cd690374b3 · generated-at: 2026-09-19 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
+<!-- generated-by: co-agent · source: CLAUDE.md · claude-md-sha: 3a1c577c33b1 · generated-at: 2026-11-26 · DO NOT EDIT — edit CLAUDE.md then run /co-agent sync-context -->
 
 > You are an external reviewer for this repo — project context below, distilled from CLAUDE.md. This file is shared verbatim by Kiro, Codex, and Agy (not a per-AI copy).
 
@@ -18,42 +18,11 @@
 Deployment/ops scripts live under `v2/`; PR review automation lives under `pr-review/`.
 Run from the repo root. Node dependencies are in `scripts/v2/package.json`, not the root.
 
-Changed HEAD PNG evidence is staged from bounded Git blobs before review credentials.
-All panel lenses and chair share safe labels and read-only generated paths; exact
-names remain in JSON data. Codex gets hash-checked --image attachments, Claude uses Read;
-BASE pixels are historical. Required unavailable images fail coverage, never suppress
-findings. No HEAD execution or permission expansion. See `docs/runbooks/pr-review-head-images.md`.
-Python helpers use isolated mode so application-base modules and PYTHONPATH cannot
-execute through standard-library imports under review credentials.
-`review-limits.json` ties raw/scrubbed diff, report and chair-stdin allocations.
-The stdin bound measures diff, reports and short headers only; synthesis instructions
-and image-context text are a separate CLI argument. The max-budget fixture proves
-that IO distinction, not model latency.
-`report-panel-failure.sh` retains fixed diagnostics and severity-keyword presence booleans, names missing vendors
-and separates checklist/image/report diagnoses without implying code safety.
-Input admission requires complete filtered diffs within 6,000 lines/128 KiB and
-complete hash-valid image evidence before model credentials. No truncated reviews.
-Two independent Codex/Claude reports each cover all four checklists and must declare
-substantive sections for L2–L5, including security L3, plus plain
-`LENS_COVERAGE: L2,L3,L4,L5`; missing panel coverage skips chair calls.
-Report truncation cannot approve unseen findings. Oversized promotion diffs still
-need a separately reviewed complete-batching/reuse design.
-Bounded full-report validation requires a plain `IMAGE_COVERAGE: COMPLETE` from both
-comprehensive vendor reports and chair for staged images. Explicit failure overrides PASS even without
-images; examples inside quotes/fences/prose do not count as declarations.
-Unsupported/over-limit entries preserve staged files but force published coverage FAIL.
-Preparation faults publish fixed failures after context/diff validation. Both image
-and pipeline fixture suites are run by the existing panel-prompt structure check.
-Static PNG/WebP/single-rendition ICO use an isolated hash-pinned Pillow 12.3.0 decoder on
-Python 3.12 with 32 attempts/files and bounded CPU/memory/time/bytes. Preserve source/render
-hashes and geometry; reject extra frames/renditions. Context admission includes rendered
-paths and final counter reserve; report omitted scope without discarding admitted images.
-Check renamed blob size before reading. Image failure does not erase response
-presence. Decorated failures block; terminal controls normalize before parsing; unreadable
-review output is distinct from image coverage. No new tool or AWS permission.
-The accepted chair must satisfy required coverage; discarded invalid output without a
-declaration may recover. Explicit/malformed and panel failures remain sticky. Omitted-path
-diagnostics use safe labels, and gate reasons are quoted environment data.
+The required review uses the official Claude Code Action on Bedrock, the existing review
+role and protected environments. Validate the exact current commit, four review areas,
+and successful complete Read results for each patch page and normalized HEAD image.
+Major or critical findings block merging. The prior panel scripts and tests remain as
+historical fixtures. See `docs/runbooks/pr-review-head-images.md`.
 
 ## Diagnostic and deployment boundaries
 - `ci_web_read.py` / `ci_web_deploy.py` serve Deploy Web. Only typed transient reads retry within a shared deadline; writes/permissions/identity failures do not retry. Failed/replaced ECS deployments are terminal; receipt verification gives known old PRIMARY visibility 15 seconds.
@@ -207,7 +176,7 @@ automatic `sudo`/`DOCKER` override. The web connection and policy suites use the
 
 The CI glob also needs Python boto3/botocore (`pip install -r agent/requirements.txt`).
 The CI fixtures use mocked AWS responses or local Terraform backends, not live AWS. Terraform
-checks use 1.15.7 with isolated data and mocked providers; dependencies are declared in
+checks use 1.17.1 with isolated data and mocked providers; dependencies are declared in
 `v2/requirements-test.txt`. Do not initialize a real backend for tests.
 
 Runtime smoke configuration is explicit and private: prepare checks registration, verify
@@ -261,7 +230,7 @@ verification. Dev releases verify exact ECS/image proof first and pass `EXPECTED
 Full releases require collect mode (including login/DB); prepare never establishes full readiness.
 Explicit activation remains separate and inactive prerequisites cannot be skipped.
 It binds dev source/account/actual role, applied runtime identity and ARM64 web digest.
-Require the pinned 43-name baseline, source-AST checked; valid growth is allowed up
+Require the pinned 49-name baseline, source-AST checked; valid growth is allowed up
 to 128 types. Every returned type
 needs post-marker succeeded evidence, known counts and
 zero unknowns, with at most four concurrent in-flight synchronous owned calls. Prepare obtains authenticated
@@ -273,7 +242,7 @@ host/member registration, measured SQL reachability over enabled scan accounts w
 unreachable accounts and fresh account-bound EC2/CloudFront member evidence from one
 exact minimal `/api/deployment/member-inventory` lookup. Explicit scope preserves null for
 host-only/unmeasured counts; CI allows host-only/null only for five source-AST-pinned
-SDK types, not 43-type coverage for every member. Only Terraform onboarding preflight permits approved subsets;
+SDK types, not 49-type coverage for every member. Only Terraform onboarding preflight permits approved subsets;
 apply reads the restored saved plan, never a newer secret. Runtime release stays exact.
 AWS CLI children use an explicit
 credential/settings allowlist, pinned path, disabled config/credential files/metadata
@@ -313,7 +282,7 @@ Catalog/per-type timeouts: `docs/runbooks/runtime-verifier-sessions.md#collectio
 `remaining_prerequisites: "not_assessed"` retains separate workflow/plan/promotion gates;
 use the canonical fixed-code operator table in that runbook.
 Tests: `node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/deployment-smoke.test.mjs`.
-The dated owner requirement supersedes the earlier CloudFront-only proposal.
+The dated owner requirement covers all current types.
 Four lanes do not promise fourfold throughput or completion for every workload.
 Keep the schedule active and fail closed on budget/permission/contention failures;
 the runbook records one feasible measured workload, not a latency guarantee.

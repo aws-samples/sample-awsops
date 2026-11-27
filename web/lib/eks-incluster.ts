@@ -118,10 +118,16 @@ export async function clusterConn(cluster: string): Promise<ClusterConn> {
 }
 
 // ── in-cluster list + normalize ────────────────────────────────────────────
+// NOTE: lib/eks-db-refs.ts (GET /api/eks/[cluster]/db-refs) is a fixed read path OUTSIDE this Kind
+// list. With the same per-cluster credential it scans Pod env values and the ConfigMap values Pods
+// reference, on the server, for managed-datastore hostnames; it returns hostnames and Secret NAMES
+// only, discards the rest of every value and never requests a Secret. This Kind list and its
+// list/describe paths stay value-redacted for ConfigMaps.
+// Read-boundary register: terraform/foundation/eks.tf (update it with any new read path).
 export type Kind =
   | 'nodes' | 'pods' | 'deployments' | 'services' | 'namespaces' | 'events' | 'endpoints'
   // EKS 탐색기 kinds (v1 K9s-style explorer parity). SECURITY: secrets stay REJECTED (the pinned
-  // allow-list invariant); configmaps are METADATA-ONLY — the normalizer never carries data values.
+  // allow-list invariant); configmaps are METADATA-ONLY on this path — the normalizer never carries data values.
   | 'replicasets' | 'daemonsets' | 'statefulsets' | 'jobs' | 'configmaps' | 'pvcs'
   // gap-audit L164 K8s map — networking.k8s.io routing metadata, read-only GET.
   | 'ingresses';
@@ -184,13 +190,13 @@ interface K8sList { items?: K8sItem[]; message?: string; kind?: string }
 // networking.k8s.io/v1 Ingress backend (read by normalizeIngress)
 interface IngressBackend { service?: { name?: string; port?: { number?: number; name?: string } } }
 interface K8sItem {
-  metadata?: { name?: string; namespace?: string; creationTimestamp?: string; labels?: Record<string, string>;
-    ownerReferences?: { kind?: string; name?: string }[] };
+  metadata?: { name?: string; uid?: string; namespace?: string; creationTimestamp?: string; labels?: Record<string, string>;
+    ownerReferences?: { kind?: string; name?: string; uid?: string; controller?: boolean }[] };
   status?: {
     conditions?: { type?: string; status?: string; reason?: string; message?: string }[];
     nodeInfo?: { kubeletVersion?: string };
     phase?: string;
-    podIP?: string;
+    podIP?: string; podIPs?: { ip?: string }[];
     containerStatuses?: { restartCount?: number }[];
     readyReplicas?: number;
     availableReplicas?: number;
@@ -200,7 +206,7 @@ interface K8sItem {
     loadBalancer?: { ingress?: { hostname?: string; ip?: string }[] };
   };
   spec?: {
-    nodeName?: string;
+    nodeName?: string; hostNetwork?: boolean;
     replicas?: number;
     type?: string;
     clusterIP?: string;
@@ -237,6 +243,8 @@ export interface ServiceRow {
   /** spec.selector (gap L229 — the Service Resources join key). Absent on selectorless
    *  Services (ExternalName / manual-Endpoints) — those join nothing, disclosed in the UI. */
   selector?: Record<string, string>;
+  /** Hostname of the first status.loadBalancer.ingress entry that has one — only for type LoadBalancer; absent for ip-only load balancers. */
+  lbHostname?: string;
 }
 export interface NamespaceRow { name: string; status: string; age: string }
 /** A Service's backing pod IPs. name == the Service name (Endpoints object name). */
@@ -251,6 +259,7 @@ export interface EventRow {
   count: number; lastSeen: string; lastSeenTs: number;
 }
 // EKS 탐색기 rows — 요약 메타데이터만 (configmap/secret VALUES는 절대 미전송).
+// The db-refs path (see the NOTE above `Kind`) is separate: it scans values server-side and returns hostnames only.
 export interface ReplicaSetRow { name: string; namespace: string; desired: number; ready: number; age: string }
 export interface DaemonSetRow { name: string; namespace: string; desired: number; current: number; ready: number; age: string }
 export interface StatefulSetRow { name: string; namespace: string; ready: string; age: string }
@@ -344,6 +353,10 @@ export function podWorkload(it: K8sItem): string {
 }
 
 export function normalizePod(it: K8sItem): PodRow {
+  const owners = (it.metadata?.ownerReferences ?? []).filter(r => r.controller === true);
+  const owner = owners.length === 1 ? owners[0] : undefined;
+  const ips = [...new Set([it.status?.podIP, ...(it.status?.podIPs ?? []).map(p => p.ip)]
+    .filter((ip): ip is string => typeof ip === 'string' && ip.length > 0))];
   const restarts = (it.status?.containerStatuses ?? []).reduce((s, c) => s + (c.restartCount ?? 0), 0);
   // Effective pod request = max(sum(app containers), max(init container)) + overhead —
   // the scheduler's reservation semantics, so node bars match `kubectl describe node`
@@ -359,6 +372,12 @@ export function normalizePod(it: K8sItem): PodRow {
     restarts,
     age: age(it.metadata?.creationTimestamp),
     podIP: it.status?.podIP ?? '',
+    ...(ips.length ? { podIPs: ips } : {}),
+    ...(it.metadata?.uid ? { uid: it.metadata.uid } : {}),
+    ...(it.metadata?.creationTimestamp ? { createdAt: it.metadata.creationTimestamp } : {}),
+    ...(typeof it.spec?.hostNetwork === 'boolean' ? { hostNetwork: it.spec.hostNetwork } : {}),
+    ...(owner?.uid && owner.name && owner.kind
+      ? { controller: { uid: owner.uid, name: owner.name, kind: owner.kind } } : {}),
     workload: podWorkload(it),
     serviceAccount: it.spec?.serviceAccountName ?? '',
     // metadata.labels (gap L229 — the Service-selector join side). Non-secret metadata.
@@ -395,6 +414,11 @@ export function normalizeDeployment(it: K8sItem): DeploymentRow {
 }
 
 export function normalizeService(it: K8sItem): ServiceRow {
+  // First entry WITH a hostname — entry[0] can be an empty placeholder or ip-only. ip-only entries
+  // are skipped: an IP can never equal a Route 53 alias/CNAME target.
+  const lbHostname = it.spec?.type === 'LoadBalancer'
+    ? (it.status?.loadBalancer?.ingress ?? []).find((e) => e.hostname)?.hostname
+    : undefined;
   const ports = (it.spec?.ports ?? [])
     .map((p) => `${p.port}${p.protocol ? `/${p.protocol}` : ''}`)
     .join(',');
@@ -407,6 +431,7 @@ export function normalizeService(it: K8sItem): ServiceRow {
     age: age(it.metadata?.creationTimestamp),
     // pass the selector only when it has entries — {} joins nothing meaningfully
     ...(it.spec?.selector && Object.keys(it.spec.selector).length ? { selector: it.spec.selector } : {}),
+    ...(lbHostname ? { lbHostname } : {}),
   };
 }
 
@@ -588,6 +613,16 @@ export async function k8sGetPath(cluster: string, path: string): Promise<string>
   return k8sGet(endpoint, path, token, caPem);
 }
 
+/**
+ * GET with a connection and bearer the caller already resolved via `clusterConn` + `eksToken`
+ * for the same cluster. For bounded multi-read runs (lib/eks-db-refs.ts): it skips the per-call
+ * scope/auth/credential resolution (several Aurora queries per call for a member cluster).
+ * The caller owns keeping the run short (the bearer is presigned with a 60 s expiry).
+ */
+export function k8sGetWith(conn: ClusterConn, token: string, path: string): Promise<string> {
+  return k8sGet(conn.endpoint, path, token, conn.caPem);
+}
+
 // ── describe (탐색기 심층 조회) — full object GET, read-only. managedFields stripped (huge);
 // configmap data/binaryData VALUES are redacted (키 이름만) — the metadata-only invariant holds
 // for describe too. Secrets are not a Kind, so they can never be described.
@@ -630,16 +665,48 @@ export async function describeInCluster(
   return obj;
 }
 
+export type NodeSource = 'kubernetes' | 'aws-api';
+
+/** Node rows plus where they came from, carried out of band: an empty EC2/node-group read
+ *  (all-Fargate or scaled-to-zero member) must still report Ready as unknown, not 0. */
+export async function listNodes(cluster: string): Promise<{ rows: NodeRow[]; source: NodeSource }> {
+  const origin: { source: NodeSource } = { source: 'kubernetes' };
+  const rows = await listInClusterFrom(cluster, 'nodes', origin) as NodeRow[];
+  return { rows, source: origin.source };
+}
+
 export async function listInCluster(cluster: string, kind: Kind): Promise<InClusterRow[]> {
+  return listInClusterFrom(cluster, kind, { source: 'kubernetes' });
+}
+
+async function listInClusterFrom(cluster: string, kind: Kind, origin: { source: NodeSource }): Promise<InClusterRow[]> {
   const { endpoint, caPem } = await clusterConn(cluster);
   const token = await eksToken(cluster);
-  const body = await k8sGet(endpoint, KIND_PATH[kind], token, caPem);
+  let body: string;
+  try {
+    body = await k8sGet(endpoint, KIND_PATH[kind], token, caPem);
+  } catch (error) {
+    // Member Access Entries use AmazonEKSViewPolicy, which has no `nodes` read. A
+    // Kubernetes 403 on nodes for a member cluster falls back to the EC2/node-group view
+    // from AWS read APIs with the registered member role; host clusters (AdminView) and
+    // every other kind keep the original failure.
+    if (kind === 'nodes' && error instanceof EksKubernetesHttpError && error.statusCode === 403) {
+      const context = await resolveEksCluster(cluster);
+      if (context.accountId !== 'self') {
+        const { listAwsApiNodes } = await import('./eks-aws-nodes');
+        const rows = await listAwsApiNodes(context);
+        origin.source = 'aws-api';
+        return rows;
+      }
+    }
+    throw error;
+  }
   const parsed = JSON.parse(body) as K8sList;
   const norm = NORMALIZERS[kind];
   return (parsed.items ?? []).map(norm);
 }
 
-// ── K8sGPT Result CRDs (ADR-035) — SAME presigned-STS token path, different API group ─────
+// ── K8sGPT Result CRDs (ADR-006[legacy 035]) — SAME presigned-STS token path, different API group ─────
 // result.core.k8sgpt.ai/v1, namespaced `results`; cluster-wide collection across namespaces.
 // READ-ONLY: a single HTTP GET, exactly like listInCluster. AWSops issues NO write verb.
 const K8SGPT_RESULTS_PATH = '/apis/result.core.k8sgpt.ai/v1/results';

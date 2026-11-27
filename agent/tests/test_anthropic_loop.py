@@ -67,6 +67,14 @@ class ShouldUseAnthropicLoopTest(unittest.TestCase):
     def test_none_payload_safe(self):
         self.assertFalse(al.should_use_anthropic_loop(None))
 
+    def test_non_bedrock_claude_model_providers_never_route_to_the_dark_loop(self):
+        os.environ["ANTHROPIC_AGENT_LOOP_ENABLED"] = "true"
+        from unittest import mock
+        for provider, expected in (("mixed", True), ("bedrock_claude", True),
+                                   ("bedrock_openai", False), ("anthropic_api", False)):
+            with self.subTest(provider=provider), mock.patch.dict(os.environ, {"MODEL_PROVIDER": provider}):
+                self.assertIs(al.should_use_anthropic_loop({"agentLoop": "anthropic"}), expected)
+
 
 # ── mcp_tools_to_anthropic ────────────────────────────────────────────────────
 class McpToolsToAnthropicTest(unittest.TestCase):
@@ -329,12 +337,12 @@ class DriveAnthropicLoopTest(unittest.TestCase):
             {"type": "tool_use", "id": "t", "name": "x", "input": {}},
         ])
 
-    def test_temperature_zero_passed_to_stream(self):
-        # P4 gate (kiro-opus MAJOR): parity with the Strands BedrockModel temperature=0.0 (ADR-038).
+    def test_stream_sends_between_tools_and_no_temperature(self):
+        # sonnet-5-5 rejects `temperature`; replayed history carries no thinking blocks.
         client = _FakeClient([(["x"], _final("end_turn", [_text("x")]))])
         _drive(client, _Recorder(), tools=[])
-        self.assertEqual(client.messages.calls[0]["temperature"], al.MODEL_TEMPERATURE)
-        self.assertEqual(al.MODEL_TEMPERATURE, 0.0)
+        self.assertNotIn("temperature", client.messages.calls[0])
+        self.assertEqual(client.messages.calls[0]["thinking"], {"type": "between_tools"})
 
     def test_multiple_tool_uses_in_one_turn_all_run(self):
         client = _FakeClient([
@@ -433,6 +441,8 @@ def _install_agent_stub(gateway_tools, *, footer="FOOTER", skill_prompt="SKILLPR
             return msgs[-1].get("content", ""), hist
         return payload.get("prompt", ""), []
     m.build_conversation = _bc
+    m.scoped_conversation = _bc
+    m.build_region_scope = lambda regions: (f"\nREGIONS:{regions}" if regions else "")
     sys.modules["agent"] = m
     return m
 
@@ -566,6 +576,20 @@ class RunAnthropicLoopTest(unittest.TestCase):
         self.assertIn("Target Account: prod (999999999999)", last_text)
         sys_text = _CapturingBedrock.instances[-1].messages.calls[0]["system"][0]["text"]
         self.assertIn("ACCT:999999999999", sys_text)
+
+    def test_region_scope_and_account_labels_reach_the_dark_path(self):
+        m = _install_agent_stub([FakeTool("t")])
+        seen = {}
+
+        def scoped(payload):
+            seen["payload"] = payload
+            return m.build_conversation(payload)
+        m.scoped_conversation = scoped
+        run(al.run_anthropic_loop({"messages": [{"role": "user", "content": "x"}],
+                                   "regions": ["us-east-1"]}))
+        sys_text = _CapturingBedrock.instances[-1].messages.calls[0]["system"][0]["text"]
+        self.assertIn("REGIONS:['us-east-1']", sys_text)
+        self.assertIn("payload", seen)  # history goes through the shared labelling helper
 
 
 if __name__ == "__main__":

@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
+import { FLOW_INPUT_KEY, FLOW_ENRICHMENT } from './flow-inventory-types';
 import { buildFlowGraph, type FlowInput, type FlowKind } from './flow-topology';
 import { buildInfraGraph, type Row } from './infra-topology';
-import type { TraceSource, TraceSpan, ServiceGraphCall, SourceRead } from './trace-source';
+import type { TraceSource, TraceRead, TraceSpan, ServiceGraphCall, SourceRead } from './trace-source';
 import { buildTraceGraph, type InfraNodeLike } from './trace-graph';
 import { graphDiagnostic, inventorySourcesStale, writeGraphState, type GraphAttempt, type GraphClass } from './graph-state';
 import { currentAccountId } from './account';
@@ -19,20 +20,16 @@ interface MetricsCallsSourceLike {
   calls(windowMins: number, endMs?: number): Promise<SourceRead<ServiceGraphCall>>;
 }
 
-// ADR-043: materialization runs off the request path in the gated instrumentation timer
+// ADR-010[legacy 043]: materialization runs off the request path in the gated instrumentation timer
 // or manual runner, with shared graph admission reserving a pool slot for auth.
 // Read/build per account with explicit budgets; only publication holds the class lock.
 // EKS pods remain live-only. No worker job or cloud-side scheduling is introduced here.
 
 // Metadata inputs are not inventory arrays. Cached flow labels are configuration facts, not live ownership proof.
-const TYPE_TO_KEY: Record<string, Exclude<keyof FlowInput, 'ipResolved' | 'ownershipRead'>> = {
-  route53: 'route53', cloudfront: 'cloudfront', alb: 'alb', nlb: 'nlb', target_group: 'tg',
-  waf: 'waf', ec2: 'ec2', lambda: 'lambda', ecs_task: 'ecsTask', s3: 's3', subnet: 'subnet',
-  // L7 origin resolution: API Gateway (→Lambda/VPC-Link→LB) + CloudFront VPC origins (→ALB/NLB).
-  apigatewayv2_api: 'apigatewayv2_api', apigatewayv2_integration: 'apigatewayv2_integration',
-  cloudfront_vpc_origin: 'cloudfront_vpc_origin',
-};
-const TYPES = Object.keys(TYPE_TO_KEY);
+// The saved flow class omits L7 display labels. Only their consumers should spend the inventory budget on them.
+const TYPES = Object.keys(FLOW_INPUT_KEY).filter(type => type !== 'apigatewayv2_route' && type !== 'alb_listener_rule');
+// Infra sources that only add DB endpoint nodes for trace binding.
+const INFRA_ENRICHMENT: ReadonlySet<string> = new Set(['rds_cluster', 'rds_proxy']);
 const FLOW_LOCK = 0x746f706f;   // 'topo' — flow rebuilds serialize on this key
 const INFRA_LOCK = 0x696e6672;  // 'infr' — infra rebuilds use a DISTINCT key so the two can run concurrently
 const TRACE_LOCK = 0x74726163;  // 'trac' — trace rebuilds use a DISTINCT key (class='trace' layer)
@@ -52,6 +49,8 @@ function relFor(sk: FlowKind | undefined, tk: FlowKind | undefined): string {
   if (sk === 'cloudfront') return tk === 'waf' ? 'PROTECTED_BY' : 'ORIGIN';
   if (sk === 'alb' || sk === 'nlb') return 'TARGETS';
   if (sk === 'tg') return 'TARGETS';
+  // An ENI-owned load-balancer target continues into that load balancer.
+  if (sk === 'target' && (tk === 'alb' || tk === 'nlb')) return 'TARGETS';
   return 'EDGE';
 }
 
@@ -69,7 +68,7 @@ export const SELF_INFRA_STATES = ['complete', 'degraded', 'stale', 'retained', '
 export const GRAPH_REBUILD_REASONS: ReadonlySet<string> = new Set(['publication_busy', 'superseded', 'rebuild_busy', 'state_schema_missing',
   'account_limit', 'time_limit', 'skip_record_busy', 'skip_record_failed', 'snapshot_limit',
   'graph_limit', 'account_failed', 'rebuild_deadline', 'collection_ok', 'collection_empty', 'collection_partial',
-  'collection_unavailable', 'collection_error']);
+  'collection_unavailable', 'collection_error', 'inventory_running']);
 
 const emptyResult = (): GraphRebuildResult =>
   ({ nodes: 0, edges: 0, published: 0, retained: 0, skipped: 0, degraded: 0, reasons: [] });
@@ -166,7 +165,8 @@ async function replaceGraph(client: PoolClient, cls: GraphClass, account: string
 }
 
 async function rebuildInventory(pool: Pool, cls: GraphClass, lock: number, runId: string,
-  types: string[], build: (rows: InventoryRow[]) => { nodes: GNode[]; edges: GEdge[] }): Promise<GraphRebuildResult> {
+  types: string[], build: (rows: InventoryRow[], account: string, withheld: string[]) => { nodes: GNode[]; edges: GEdge[] },
+  enrichment: ReadonlySet<string> = new Set()): Promise<GraphRebuildResult> {
   const totals = emptyResult();
   if (cls === 'infra') { totals.selfInfraComplete = false; totals.selfInfraStatus = 'unattempted'; }
   const reason = (value: string) => { if (!totals.reasons.includes(value)) totals.reasons.push(value); };
@@ -204,10 +204,20 @@ async function rebuildInventory(pool: Pool, cls: GraphClass, lock: number, runId
       try {
         const accountTypes = inventoryTypesForAccount(types, account);
         const snapshot = await inventorySnapshot(pool, cls, account, accountTypes,
-          counts ??= await inventoryCounts(pool, types));
-        attempt = inventoryAttempt(snapshot, accountTypes, cls, account, attemptedAt);
+          counts ??= await inventoryCounts(pool, types), [...enrichment]);
+        const { withheldTypes, ...evaluated } = inventoryAttempt(snapshot, accountTypes, cls, account, attemptedAt, enrichment);
+        attempt = evaluated;
         if (snapshot.truncated) reason('snapshot_limit');
-        const graph = attempt.publish ? build(snapshot.rows) : { nodes: [], edges: [] };
+        // A producer that is still writing withholds publication only until it finalizes; the
+        // timer uses this reason to retry once after the run instead of waiting a full interval.
+        const sources = Array.isArray(attempt.details.sources) ? attempt.details.sources as { producerStatus?: unknown }[] : [];
+        if (!attempt.publish && sources.some(source => source?.producerStatus === 'running')) {
+          reason('inventory_running');
+        }
+        // Withheld enrichment rows (stale/failed/partial ledgers) never feed ownership claims.
+        const inputRows = withheldTypes.length
+          ? snapshot.rows.filter(row => !withheldTypes.includes(row.resource_type)) : snapshot.rows;
+        const graph = attempt.publish ? build(inputRows, account, withheldTypes) : { nodes: [], edges: [] };
         if (graph.nodes.length > 4000 || graph.edges.length > 8000
           || Buffer.byteLength(JSON.stringify(graph)) > 8 * 1024 * 1024) {
           attempt.publish = false; attempt.status = 'partial';
@@ -248,10 +258,12 @@ async function rebuildInventory(pool: Pool, cls: GraphClass, lock: number, runId
 }
 
 export async function rebuildGraph(pool: Pool, runId: string = randomUUID()) {
-  return rebuildInventory(pool, 'flow', FLOW_LOCK, runId, TYPES, rows => {
-    const input: FlowInput = { ownershipRead: { configurationOnly: true } };
+  return rebuildInventory(pool, 'flow', FLOW_LOCK, runId, TYPES, (rows, _account, withheld) => {
+    // Withheld enrichment rows are absent, and the resolver also refuses inferences they guard.
+    const input: FlowInput = { ownershipRead: { configurationOnly: true,
+      ...(withheld.length ? { ownerIncomplete: withheld } : {}) } };
     for (const row of rows) {
-      const key = TYPE_TO_KEY[row.resource_type];
+      const key = FLOW_INPUT_KEY[row.resource_type as keyof typeof FLOW_INPUT_KEY];
       if (key) (input[key] ??= []).push({ ...(row.data as object ?? {}), resource_id: row.resource_id,
         region: row.region, captured_at: row.captured_at });
     }
@@ -260,20 +272,20 @@ export async function rebuildGraph(pool: Pool, runId: string = randomUUID()) {
     // L7 display labels remain live-only; persisted edges keep the existing traversal contract.
     return { nodes: graph.nodes, edges: graph.edges.map(edge => ({ source: edge.source, target: edge.target,
       rel: relFor(kinds.get(edge.source), kinds.get(edge.target)), confidence: edge.confidence })) };
-  });
+  }, FLOW_ENRICHMENT);
 }
 
 export async function rebuildInfraGraph(pool: Pool, runId: string = randomUUID()) {
-  return rebuildInventory(pool, 'infra', INFRA_LOCK, runId, INFRA_TYPES, rows => {
+  return rebuildInventory(pool, 'infra', INFRA_LOCK, runId, INFRA_TYPES, (rows, account) => {
     const graph = buildInfraGraph({
       resources: rows.filter(row => !NET_TYPES.includes(row.resource_type)),
       vpcs: rows.filter(row => row.resource_type === 'vpc'),
       subnets: rows.filter(row => row.resource_type === 'subnet'),
       securityGroups: rows.filter(row => row.resource_type === 'security_group'),
-    });
+    }, account);
     return { nodes: graph.nodes, edges: graph.edges.map(edge => ({ source: edge.source, target: edge.target,
       rel: edge.rel, confidence: 'observed' })) };
-  });
+  }, INFRA_ENRICHMENT);
 }
 
 // Trace collection and materialization share one explicit evidence window.
@@ -301,7 +313,7 @@ export async function rebuildTraceGraph(
     windowStartMs: startMs, windowEndMs: endMs,
   });
   // Adapter status, not a separate readiness probe, distinguishes absent config from a failed read.
-  const spanReads = await Promise.all(sources.map(async (source, i) => {
+  const spanReads = await Promise.all(sources.map(async (source, i): Promise<TraceRead> => {
     try { return await source.recentSpans(TRACE_WINDOW_MINS, TRACE_SPAN_CAP, endMs); }
     catch { return failed<TraceSpan>(`trace:${i}`); }
   }));
@@ -318,11 +330,13 @@ export async function rebuildTraceGraph(
   const cannotSweep = reads.some((read) => read.canSweep === false);
   const partial = reads.some((read) => read.status === 'partial') || (cannotSweep && !hasFailure);
   const spans = spanReads.flatMap((read) => read.items.map((span) => ({ ...span, sourceId: span.sourceId ?? read.sourceId })));
-  const calls = metricReads.flatMap((read) => read.items.map((call) => ({
-    ...call,
-    clientIdentity: { ...call.clientIdentity, sourceId: call.clientIdentity?.sourceId ?? read.sourceId },
-    serverIdentity: { ...call.serverIdentity, sourceId: call.serverIdentity?.sourceId ?? read.sourceId },
-  })));
+  // Aggregate trace sources return span-pair edges beside their node rows; same sourceId stamping.
+  const calls = [...spanReads.map((read) => ({ ...read, items: read.calls ?? [] })), ...metricReads]
+    .flatMap((read) => read.items.map((call) => ({
+      ...call,
+      clientIdentity: { ...call.clientIdentity, sourceId: call.clientIdentity?.sourceId ?? read.sourceId },
+      serverIdentity: { ...call.serverIdentity, sourceId: call.serverIdentity?.sourceId ?? read.sourceId },
+    })));
   // Unproven empty/lost-data reads retain the prior generation. Valid nonempty
   // bounded reads continue through the existing atomic partial-snapshot publisher.
   if (!reads.length || hasFailure || cannotSweep || (partial && !spans.length && !calls.length)) {
@@ -352,14 +366,23 @@ export async function rebuildTraceGraph(
     infraUnavailable = true;
   }
   const graph = buildTraceGraph(spans, calls, infraNodes, currentAccountId());
-  // Preserve structurally important DB/queue/workload nodes before ranking service volume.
-  const rank = (kind: string) => kind === 'service' ? 0 : 1;
-  const nodes = graph.nodes.sort((a, b) => rank(b.kind) - rank(a.kind)
-    || Number(b.meta.spanCount ?? 0) - Number(a.meta.spanCount ?? 0)).slice(0, TRACE_NODE_CAP);
-  const kept = new Set(nodes.map((node) => node.id));
-  const edges = graph.edges.filter((edge) => kept.has(edge.source) && kept.has(edge.target))
-    .sort((a, b) => (b.meta.spanCount + b.meta.metricCount) - (a.meta.spanCount + a.meta.metricCount))
-    .slice(0, TRACE_EDGE_CAP);
+  // Node selection follows edge volume: the heaviest edges claim both endpoints first, so a kept
+  // dependency (db/queue/workload) always keeps its caller and many low-volume dependencies cannot
+  // evict the services that use them. Remaining capacity goes to the remaining nodes by volume.
+  const weight = (edge: { meta: { spanCount: number; metricCount: number } }) => edge.meta.spanCount + edge.meta.metricCount;
+  const volume = (meta: Record<string, unknown>) => Number(meta.spanCount ?? 0) + Number(meta.metricCount ?? 0);
+  const byWeight = [...graph.edges].sort((a, b) => weight(b) - weight(a));
+  const kept = new Set<string>();
+  for (const edge of byWeight) {
+    const need = Number(!kept.has(edge.source)) + Number(!kept.has(edge.target));
+    if (need && kept.size + need <= TRACE_NODE_CAP) { kept.add(edge.source); kept.add(edge.target); }
+  }
+  for (const node of [...graph.nodes].sort((a, b) => volume(b.meta) - volume(a.meta))) {
+    if (kept.size >= TRACE_NODE_CAP) break;
+    kept.add(node.id);
+  }
+  const nodes = graph.nodes.filter((node) => kept.has(node.id));
+  const edges = byWeight.filter((edge) => kept.has(edge.source) && kept.has(edge.target)).slice(0, TRACE_EDGE_CAP);
   const nodeDrops = graph.nodes.length - nodes.length;
   const edgeDrops = graph.edges.length - edges.length;
   const incomplete = partial || infraUnavailable || nodeDrops > 0 || edgeDrops > 0

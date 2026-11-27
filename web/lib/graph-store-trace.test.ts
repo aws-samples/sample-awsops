@@ -86,6 +86,104 @@ describe('trusted host account DB bridge', () => {
   });
 });
 
+describe('source-aggregated trace edges', () => {
+  it('publishes span-pair edges a trace source aggregated beside its node rows', async () => {
+    const { pool, params } = mockPool([]);
+    const source = {
+      available: async () => true,
+      recentSpans: async (_w: number, _c: number, endMs = Date.now()) => ({
+        sourceId: 'clickhouse:3', status: 'ok' as const, reasons: [], windowStartMs: endMs - 3_600_000, windowEndMs: endMs,
+        items: [span({ service: 'checkout', startMs: endMs - 1_000, weight: 9 })],
+        calls: [{ client: 'frontend', server: 'checkout', count: 17, evidence: 'trace' as const, rel: 'calls' as const }],
+      }),
+    };
+    await rebuildTraceGraph(pool as never, [source]);
+    const services = params.filter(p => p[1] === 'service').map(p => JSON.parse(String(p[3])));
+    expect(services.map(meta => [meta.service, meta.sourceId]).sort()).toEqual([
+      ['checkout', 'clickhouse:3'], ['frontend', 'clickhouse:3'],
+    ]);
+    const edges = params.filter(p => p.includes('calls'));
+    expect(edges).toHaveLength(1);
+    expect(JSON.parse(String(edges[0][7]))).toEqual({ spanCount: 17, metricCount: 0 });
+  });
+});
+
+describe('trace node cap selection', () => {
+  it('keeps the calling service when many span-derived databases exceed the node cap', async () => {
+    const { pool, params } = mockPool([]);
+    const now = Date.now();
+    const spans = Array.from({ length: 260 }, (_, i) => span({
+      service: 'tenant-api', spanId: `s${i}`, kind: 'CLIENT', dbSystem: 'postgresql',
+      dbHost: `tenant-${i}.db.example.internal`, startMs: now - 1_000, weight: i + 1,
+    }));
+    const source = { available: async () => true, recentSpans: async (_w: number, _c: number, endMs = Date.now()) => ({
+      sourceId: 'clickhouse:3', status: 'ok' as const, reasons: [], items: spans,
+      windowStartMs: endMs - 3_600_000, windowEndMs: endMs }) };
+    await rebuildTraceGraph(pool as never, [source]);
+    const kinds = params.filter(p => p[1] === 'service' || p[1] === 'db').map(p => p[1]);
+    expect(kinds.filter(kind => kind === 'service')).toHaveLength(1);
+    expect(kinds).toHaveLength(200);
+    // Every published query edge keeps its caller, and the heaviest databases are the ones kept.
+    const hosts = params.filter(p => p[1] === 'db').map(p => JSON.parse(String(p[3])).host as string);
+    expect(hosts).toContain('tenant-259.db.example.internal');
+    expect(hosts).not.toContain('tenant-0.db.example.internal');
+  });
+});
+
+describe('instance observation publication', () => {
+  const account = '111122223333', region = 'ap-northeast-2', instanceId = 'i-0123456789abcdef0';
+  const infra = [
+    { id: `ec2:@self:${region}:${instanceId}`, kind: 'ec2',
+      meta: { resourceId: instanceId, inventoryAccount: 'self', region } },
+    { id: `rds:@self:${region}:orders`, kind: 'rds',
+      meta: { resourceId: 'orders', inventoryAccount: 'self', region, host: 'orders.example.test' } },
+  ];
+  const querySpan = {
+    service: 'checkout', kind: 'CLIENT', accountId: account, region, hostId: instanceId,
+    dbSystem: 'postgresql', dbHost: 'orders.example.test', startMs: 1_794_000_000_000,
+  };
+
+  it('stores the validated same-span pair in trace edge JSON', async () => {
+    vi.stubEnv('HOST_ACCOUNT_ID', account);
+    const { pool, params } = mockPool(infra);
+    await rebuildTraceGraph(pool as never, [new FakeTraceSource([span(querySpan)])]);
+    const queryEdge = params.find(p => p[2] === 'queries')!;
+    expect(JSON.parse(String(queryEdge[7])).instance_observations).toEqual([expect.objectContaining({
+      instance_id: instanceId, instance_ref: `ec2:@self:${region}:${instanceId}`,
+      database_ref: `rds:@self:${region}:orders`, account, region,
+      db_host: 'orders.example.test', observed_at_ms: 1_794_000_000_000,
+      source_id: 'fake:default', provenance: 'trace_span',
+    })]);
+    const scopedQueryNodes = params.filter(p => p[1] === 'service' || p[1] === 'db');
+    expect(scopedQueryNodes).toHaveLength(2);
+    for (const node of scopedQueryNodes) {
+      expect(JSON.parse(String(node[3]))).toMatchObject({
+        accountId: account, region, sourceId: 'fake:default',
+      });
+    }
+  });
+
+  it('discloses capped observation pairs on the edge without degrading the collection', async () => {
+    vi.stubEnv('HOST_ACCOUNT_ID', account);
+    const fleetId = (index: number) => `i-${index.toString(16).padStart(17, '0')}`;
+    const fleet = [...Array.from({ length: 201 }, (_, index) => ({
+      id: `ec2:@self:${region}:${fleetId(index)}`, kind: 'ec2',
+      meta: { resourceId: fleetId(index), inventoryAccount: 'self', region } })), infra[1]];
+    const { pool, params, client } = mockPool(fleet);
+    const result = await rebuildTraceGraph(pool as never, [new FakeTraceSource(
+      Array.from({ length: 201 }, (_, index) =>
+        span({ ...querySpan, spanId: `query-${index}`, hostId: fleetId(index) })),
+    )]);
+    expect(result).toMatchObject({ published: 1, degraded: 0 });
+    const state = client.query.mock.calls.find(([sql]) => sql.includes('INSERT INTO topology_graph_state'))![1]!;
+    expect(state[1]).toBe('ok');
+    expect(JSON.parse(String(state[4]))).not.toHaveProperty('instanceObservationDrops');
+    const metadata = JSON.parse(String(params.find(p => p[2] === 'queries')![7]));
+    expect(metadata.instance_observations).toHaveLength(200);
+    expect(metadata.instance_observations_omitted).toBe(1);
+  });
+});
+
 describe('rebuildTraceGraph aggregation', () => {
   // checkout(svc) → orders(svc) → postgres(db); checkout runs on k8s workload shop/checkout
   const spans: TraceSpan[] = [
@@ -298,6 +396,16 @@ describe('resolveInfraRef (bridge-ref matcher, pure)', () => {
     expect(resolveInfraRef('some-other-db.example.com', infraNodes)).toBeUndefined();
     expect(resolveInfraRef(undefined, infraNodes)).toBeUndefined();
     expect(resolveInfraRef('aurora', [])).toBeUndefined();
+  });
+
+  it('withholds an ambiguous regional database prefix and prefers one exact host', () => {
+    const nodes = [
+      { id: 'rds:@self:us-east-1:orders', kind: 'rds', meta: { host: 'orders.east.example.test' } },
+      { id: 'rds:@self:ap-northeast-2:orders', kind: 'rds', meta: { host: 'orders.seoul.example.test' } },
+    ];
+    expect(resolveInfraRef('orders', nodes)).toBeUndefined();
+    expect(resolveInfraRef('orders.seoul.example.test', nodes)).toBe(nodes[1].id);
+    expect(resolveInfraRef('orders', [...nodes, { id: 'rds:exact', kind: 'rds', meta: { host: 'orders' } }])).toBe('rds:exact');
   });
 
   it('does NOT match a production-shaped infra node with no host (nothing to match against)', () => {

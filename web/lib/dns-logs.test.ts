@@ -77,6 +77,46 @@ describe('dnsLogStatus', () => {
     await dnsLogStatus();
     expect(r53Send).toHaveBeenCalledTimes(1);
   });
+
+  it('does not let a reset pending query replace or detach a newer status query', async () => {
+    let finishOld!: (value: unknown) => void;
+    let finishFresh!: (value: unknown) => void;
+    const old = new Promise((resolve) => { finishOld = resolve; });
+    const fresh = new Promise((resolve) => { finishFresh = resolve; });
+    let reads = 0;
+    r53Send.mockImplementation(() => ++reads === 1 ? old : fresh);
+    const { dnsLogStatus, _resetDnsCacheForTests } = await import('./dns-logs');
+    const oldRequest = dnsLogStatus();
+    await Promise.resolve();
+    _resetDnsCacheForTests();
+    const freshRequest = dnsLogStatus();
+    finishOld({ ResolverQueryLogConfigs: [] });
+    await oldRequest;
+    const duplicate = dnsLogStatus();
+    finishFresh({ ResolverQueryLogConfigs: [{ Id: 'fresh-config', Name: 'fresh' }] });
+    expect((await freshRequest).configs).toMatchObject([{ id: 'fresh-config' }]);
+    expect((await duplicate).configs).toMatchObject([{ id: 'fresh-config' }]);
+    expect((await dnsLogStatus()).configs).toMatchObject([{ id: 'fresh-config' }]);
+  });
+
+  it('retains status for four minutes without extending TTL on access', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    let reads = 0;
+    r53Send.mockImplementation(async () => ({
+      ResolverQueryLogConfigs: [{ Id: `config-${++reads}` }],
+    }));
+    try {
+      const { dnsLogStatus } = await import('./dns-logs');
+      expect((await dnsLogStatus()).configs[0].id).toBe('config-1');
+      vi.setSystemTime(239_999);
+      expect((await dnsLogStatus()).configs[0].id).toBe('config-1');
+      vi.setSystemTime(240_000);
+      expect((await dnsLogStatus()).configs[0].id).toBe('config-2');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 // ── dnsAnalytics fixtures ─────────────────────────────────────────────────────

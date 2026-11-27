@@ -1,6 +1,6 @@
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import { graphTransaction } from './graph-transaction';
-import type { GraphAttempt, GraphClass } from './graph-state';
+import { inventoryStaleAfterMs, type GraphAttempt, type GraphClass } from './graph-state';
 import type { Row } from './infra-topology';
 import { HOST_ONLY_TREND_TYPES } from './trend-utils';
 import { redactInventorySecrets } from './inventory-redaction';
@@ -12,10 +12,13 @@ export const inventoryTypesForAccount = (types: string[], account: string) =>
 // These fields/types are the placement inputs consumed by buildInfraGraph and produced by
 // sync_lambda. Nested opensearch.vpc_options / msk.provisioned are not placement inputs.
 export const INFRA_TYPES = ['vpc', 'subnet', 'security_group', 'ec2', 'lambda', 'rds',
-  'alb', 'nlb', 'target_group', 'elasticache', 'route_table', 'nat_gateway', 'neptune_cluster'];
+  'alb', 'nlb', 'target_group', 'elasticache', 'route_table', 'nat_gateway', 'neptune_cluster',
+  'rds_cluster', 'rds_proxy'];
+// endpoint/reader_endpoint/custom_endpoints are the dialable DB hosts trace spans bind to.
 const INFRA_FIELDS = ['vpc_id', 'subnet_id', 'subnet_ids', 'vpc_subnet_ids', 'subnets',
   'availability_zones', 'security_groups', 'security_group_ids', 'vpc_security_group_ids',
-  'vpc_security_groups', 'endpoint_address', 'group_name', 'title', 'name', 'tags'];
+  'vpc_security_groups', 'endpoint_address', 'endpoint', 'reader_endpoint', 'custom_endpoints',
+  'group_name', 'title', 'name', 'tags'];
 // Flow joins and safe display fields consumed by buildFlowGraph; unused provider blobs
 // must not exhaust the transfer budget or override authoritative identity columns.
 const FLOW_FIELDS = [...INFRA_FIELDS, 'name', 'arn', 'dns_name', 'domain_name', 'aliases', 'origins', 'web_acl_id',
@@ -23,7 +26,10 @@ const FLOW_FIELDS = [...INFRA_FIELDS, 'name', 'arn', 'dns_name', 'domain_name', 
   'vpc_id', 'scheme', 'private_zone', 'alias_target', 'records', 'type', 'last_status',
   'task_group', 'cluster_arn', 'attachments', 'origin_refs', 'api_id', 'integration_uri',
   'connection_type', 'tags', 'status', 'enabled', 'protocol', 'port', 'subnet_ids', 'security_groups',
-  'load_balancer_arn', 'conditions', 'actions', 'is_default', 'target', 'route_key'];
+  'load_balancer_arn', 'conditions', 'actions', 'is_default', 'target', 'route_key',
+  // ENI ownership inputs (eni-owner.ts) and the RDS placement it disambiguates by.
+  'interface_type', 'description', 'requester_id', 'requester_managed', 'attached_instance_id',
+  'private_ip_address', 'private_ip_addresses', 'availability_zone', 'db_cluster_identifier'];
 export type InventoryRow = Row & { resource_type: string; captured_at?: unknown; account_id: string };
 type Run = Record<string, any>;
 export const INVENTORY_ROW_CAP = 8192;
@@ -57,97 +63,116 @@ export async function inventoryAccounts(pool: Pool, cls: GraphClass, types: stri
 }
 
 /** One fleet reconciliation per class/pass. A changed ledger invalidates its proof. */
-export async function inventoryCounts(pool: Pool, types: string[]) {
+export async function inventoryCounts(pool: Pool, types: string[], verifyGeneration?: (client: PoolClient) => Promise<void>) {
   return graphTransaction(pool, true, async client => {
-    const runs = await client.query(`SELECT resource_type, xmin::text AS version
-      FROM inventory_sync_runs WHERE account_id='self' AND status='succeeded' AND resource_type=ANY($1)`, [types]);
-    const countTypes = runs.rows.map(run => run.resource_type);
-    const counts = countTypes.length ? await client.query(`SELECT resource_type, count(*)::int AS count
-      FROM inventory_resources WHERE resource_type=ANY($1) GROUP BY resource_type`, [countTypes]) : { rows: [] };
-    const byType = new Map(counts.rows.map(row => [row.resource_type, row.count]));
-    return new Map<string, { version: string; count: number }>(runs.rows.map(run =>
-      [run.resource_type, { version: run.version, count: byType.get(run.resource_type) ?? 0 }]));
+    await verifyGeneration?.(client);
+    return inventoryCountsFromClient(client, types);
   });
 }
 
+async function inventoryCountsFromClient(client: PoolClient, types: string[]) {
+  const runs = await client.query(`SELECT resource_type, xmin::text AS version
+    FROM inventory_sync_runs WHERE account_id='self' AND status='succeeded' AND resource_type=ANY($1)`, [types]);
+  const countTypes = runs.rows.map(run => run.resource_type);
+  const counts = countTypes.length ? await client.query(`SELECT resource_type, count(*)::int AS count
+    FROM inventory_resources WHERE resource_type=ANY($1) GROUP BY resource_type`, [countTypes]) : { rows: [] };
+  const byType = new Map(counts.rows.map(row => [row.resource_type, row.count]));
+  return new Map<string, { version: string; count: number }>(runs.rows.map(run =>
+    [run.resource_type, { version: run.version, count: byType.get(run.resource_type) ?? 0 }]));
+}
+
 export async function inventorySnapshot(pool: Pool, cls: GraphClass, account: string, types: string[],
-  proof?: Awaited<ReturnType<typeof inventoryCounts>>) {
+  proof?: Awaited<ReturnType<typeof inventoryCounts>>, enrichment: readonly string[] = [],
+  verifyGeneration?: (client: PoolClient) => Promise<void>) {
   types = [...new Set(types)];
-  const counts = proof ?? await inventoryCounts(pool, types);
+  const counts = proof ?? await inventoryCounts(pool, types, verifyGeneration);
+  return graphTransaction(pool, true, async client => {
+    await verifyGeneration?.(client);
+    return inventorySnapshotFromClient(client, cls, account, types, counts, enrichment);
+  });
+}
+
+async function inventorySnapshotFromClient(client: PoolClient, cls: GraphClass, account: string, types: string[],
+  counts: Awaited<ReturnType<typeof inventoryCounts>>, enrichment: readonly string[] = []) {
   // Both classes use the already-supported flow envelope; bytes/time still bound the read.
   const rowCap = INVENTORY_ROW_CAP;
-  return graphTransaction(pool, true, async client => {
-    const runs = await client.query(`SELECT account_id, resource_type, status, started_at,
-      finished_at, last_success_at, row_count, unknown_attribute_count, xmin::text AS version
-      FROM inventory_sync_runs WHERE account_id='self' AND resource_type=ANY($1)`, [types]);
-    // sync() writes these per-account counts only for observed/probed participants after
-    // pruning. The self-keyed job ledger alone cannot prove a member's empty result.
-    const participation = await client.query(`
-      SELECT DISTINCT ON (s.resource_type) s.resource_type,s.resource_count,s.captured_at
-      FROM inventory_snapshots s WHERE s.account_id=$1 AND s.resource_type=ANY($2)
-        AND ($1='self' OR EXISTS (SELECT 1 FROM accounts a WHERE a.account_id=$1 AND a.enabled
-          AND (a.all_regions OR EXISTS (SELECT 1 FROM account_regions ar
-            WHERE ar.account_id=a.account_id AND ar.enabled))))
-      ORDER BY s.resource_type,s.captured_at DESC`, [account, types]);
-    // Both classes project their consumed fields before SQL byte guards prevent oversized
-    // provider payloads from reaching Node. Identity columns remain authoritative.
-    const result = await client.query(`WITH bounded AS MATERIALIZED (
-      SELECT account_id, resource_type, resource_id, region, captured_at,
-        (SELECT coalesce(jsonb_object_agg(key,
-          CASE WHEN key IN ('origins','actions') AND jsonb_typeof(value)='array' THEN
-            (SELECT coalesce(jsonb_agg(CASE WHEN jsonb_typeof(item)='object' THEN
-              CASE WHEN key='origins' THEN item - 'CustomHeaders' - 'custom_headers' - 'customHeaders'
-                - 'OriginCustomHeaders' - 'origin_custom_headers'
-              ELSE item #- '{AuthenticateOidcConfig,ClientSecret}' #- '{authenticate_oidc_config,client_secret}' END
-              ELSE item END ORDER BY ordinal), '[]'::jsonb)
-             FROM jsonb_array_elements(value) WITH ORDINALITY AS parts(item,ordinal))
-          WHEN key='target_health_descriptions' AND jsonb_typeof(value)='array' THEN
-            (SELECT coalesce(jsonb_agg(CASE WHEN jsonb_typeof(item)='object' THEN
-              jsonb_strip_nulls(jsonb_build_object(
-                'Target',jsonb_build_object('Id',item#>'{Target,Id}','Port',item#>'{Target,Port}'),
-                'TargetHealth',jsonb_build_object('State',item#>'{TargetHealth,State}')))
-              ELSE item END ORDER BY ordinal), '[]'::jsonb)
-             FROM jsonb_array_elements(value) WITH ORDINALITY AS targets(item,ordinal))
-          ELSE value END), '{}'::jsonb)
-         FROM jsonb_each(data) WHERE key=ANY($3)) AS data
-      FROM inventory_resources WHERE account_id=$1 AND resource_type=ANY($2)
-      ORDER BY resource_type, region, resource_id LIMIT $4
-    ), sized AS MATERIALIZED (
-      SELECT *, octet_length(data::text)+octet_length(resource_id)+octet_length(region) AS bytes FROM bounded
-    ), budgeted AS (
-      SELECT *, sum(CASE WHEN bytes <= $5 THEN bytes ELSE 0 END)
-        OVER (ORDER BY resource_type, region, resource_id) AS total_bytes FROM sized
-    ) SELECT account_id, resource_type,
-      CASE WHEN bytes <= $5 AND total_bytes <= $6 THEN resource_id ELSE '' END AS resource_id,
-      CASE WHEN bytes <= $5 AND total_bytes <= $6 THEN region ELSE '' END AS region, captured_at,
-      CASE WHEN bytes <= $5 AND total_bytes <= $6 THEN data ELSE NULL END AS data,
-      bytes > $5 OR total_bytes > $6 AS oversized
-      FROM budgeted ORDER BY resource_type, region, resource_id`,
-    [account, types, cls === 'infra' ? INFRA_FIELDS : FLOW_FIELDS, rowCap + 1, ROW_BYTES, SNAPSHOT_BYTES]);
-    const rows = result.rows.map(row => ({ ...row, data: redactInventorySecrets(row.data) })) as InventoryRow[];
-    const truncated = rows.length > rowCap || rows.some(row => row.oversized);
-    let truncatedTypes: string[] = [];
-    if (truncated) {
-      // Diagnose omitted payload by type in the SAME snapshot; this never authorizes a sweep.
-      const totals = await client.query(`SELECT resource_type, count(*)::int AS account_count
-        FROM inventory_resources WHERE account_id=$1 AND resource_type=ANY($2) GROUP BY resource_type`, [account, types]);
-      const valid = totals.rows.every(row => Number.isSafeInteger(row.account_count) && row.account_count >= 0);
-      const counts = new Map(totals.rows.map(row => [row.resource_type, row.account_count]));
-      const returned = rows.slice(0, rowCap).filter(row => !row.oversized);
-      truncatedTypes = types.filter(type => !valid || (counts.get(type) ?? 0) > returned.filter(row => row.resource_type === type).length);
-    }
-    // sync_lambda marks the ledger running before changing rows, then finalizes it.
-    // Only the identical ledger version can reuse this pass's reconciled count.
-    // A matching aggregate still does not prove an unobserved member participated.
-    const aggregateCounts = new Map<string, number>();
-    for (const run of runs.rows) {
-      const count = counts.get(run.resource_type);
-      if (count && typeof run.version === 'string' && count.version === run.version)
-        aggregateCounts.set(run.resource_type, count.count);
-    }
-    return { rows, types, runs: runs.rows as Run[],
-      aggregateCounts, participation: participation.rows as Run[], truncated, truncatedTypes };
-  });
+
+  const runs = await client.query(`SELECT account_id, resource_type, status, started_at,
+    finished_at, last_success_at, row_count, unknown_attribute_count, xmin::text AS version
+    FROM inventory_sync_runs WHERE account_id='self' AND resource_type=ANY($1)`, [types]);
+  // sync() writes these per-account counts only for observed/probed participants after
+  // pruning. The self-keyed job ledger alone cannot prove a member's empty result.
+  const participation = await client.query(`
+    SELECT DISTINCT ON (s.resource_type) s.resource_type,s.resource_count,s.captured_at
+    FROM inventory_snapshots s WHERE s.account_id=$1 AND s.resource_type=ANY($2)
+      AND ($1='self' OR EXISTS (SELECT 1 FROM accounts a WHERE a.account_id=$1 AND a.enabled
+        AND (a.all_regions OR EXISTS (SELECT 1 FROM account_regions ar
+          WHERE ar.account_id=a.account_id AND ar.enabled))))
+    ORDER BY s.resource_type,s.captured_at DESC`, [account, types]);
+  // Both classes project their consumed fields before SQL byte guards prevent oversized
+  // provider payloads from reaching Node. Identity columns remain authoritative.
+  // Enrichment types ($7) sort after core types so the shared row/byte caps cut them first.
+  // Preserve core and ownership evidence before spending the remaining budget on route labels.
+  const order = `CASE WHEN NOT (resource_type = ANY($7)) THEN 0
+    WHEN resource_type = 'alb_listener_rule' THEN 3 WHEN resource_type = 'apigatewayv2_route' THEN 2
+    ELSE 1 END, resource_type, region, resource_id`;
+  const result = await client.query(`WITH bounded AS MATERIALIZED (
+    SELECT account_id, resource_type, resource_id, region, captured_at,
+      (SELECT coalesce(jsonb_object_agg(key,
+        CASE WHEN key IN ('origins','actions') AND jsonb_typeof(value)='array' THEN
+          (SELECT coalesce(jsonb_agg(CASE WHEN jsonb_typeof(item)='object' THEN
+            CASE WHEN key='origins' THEN item - 'CustomHeaders' - 'custom_headers' - 'customHeaders'
+              - 'OriginCustomHeaders' - 'origin_custom_headers'
+            ELSE item #- '{AuthenticateOidcConfig,ClientSecret}' #- '{authenticate_oidc_config,client_secret}' END
+            ELSE item END ORDER BY ordinal), '[]'::jsonb)
+           FROM jsonb_array_elements(value) WITH ORDINALITY AS parts(item,ordinal))
+        WHEN key='target_health_descriptions' AND jsonb_typeof(value)='array' THEN
+          (SELECT coalesce(jsonb_agg(CASE WHEN jsonb_typeof(item)='object' THEN
+            jsonb_strip_nulls(jsonb_build_object(
+              'Target',jsonb_build_object('Id',item#>'{Target,Id}','Port',item#>'{Target,Port}'),
+              'TargetHealth',jsonb_build_object('State',item#>'{TargetHealth,State}')))
+            ELSE item END ORDER BY ordinal), '[]'::jsonb)
+           FROM jsonb_array_elements(value) WITH ORDINALITY AS targets(item,ordinal))
+        ELSE value END), '{}'::jsonb)
+       FROM jsonb_each(data) WHERE key=ANY($3)) AS data
+    FROM inventory_resources WHERE account_id=$1 AND resource_type=ANY($2)
+    ORDER BY ${order} LIMIT $4
+  ), sized AS MATERIALIZED (
+    SELECT *, octet_length(data::text)+octet_length(resource_id)+octet_length(region) AS bytes FROM bounded
+  ), budgeted AS (
+    SELECT *, sum(CASE WHEN bytes <= $5 THEN bytes ELSE 0 END)
+      OVER (ORDER BY ${order}) AS total_bytes FROM sized
+  ) SELECT account_id, resource_type,
+    CASE WHEN bytes <= $5 AND total_bytes <= $6 THEN resource_id ELSE '' END AS resource_id,
+    CASE WHEN bytes <= $5 AND total_bytes <= $6 THEN region ELSE '' END AS region, captured_at,
+    CASE WHEN bytes <= $5 AND total_bytes <= $6 THEN data ELSE NULL END AS data,
+    bytes > $5 OR total_bytes > $6 AS oversized
+    FROM budgeted ORDER BY ${order}`,
+  [account, types, cls === 'infra' ? INFRA_FIELDS : FLOW_FIELDS, rowCap + 1, ROW_BYTES, SNAPSHOT_BYTES,
+    [...enrichment]]);
+  const rows = result.rows.map(row => ({ ...row, data: redactInventorySecrets(row.data) })) as InventoryRow[];
+  const truncated = rows.length > rowCap || rows.some(row => row.oversized);
+  let truncatedTypes: string[] = [];
+  if (truncated) {
+    // Diagnose omitted payload by type in the SAME snapshot; this never authorizes a sweep.
+    const totals = await client.query(`SELECT resource_type, count(*)::int AS account_count
+      FROM inventory_resources WHERE account_id=$1 AND resource_type=ANY($2) GROUP BY resource_type`, [account, types]);
+    const valid = totals.rows.every(row => Number.isSafeInteger(row.account_count) && row.account_count >= 0);
+    const counts = new Map(totals.rows.map(row => [row.resource_type, row.account_count]));
+    const returned = rows.slice(0, rowCap).filter(row => !row.oversized);
+    truncatedTypes = types.filter(type => !valid || (counts.get(type) ?? 0) > returned.filter(row => row.resource_type === type).length);
+  }
+  // sync_lambda marks the ledger running before changing rows, then finalizes it.
+  // Only the identical ledger version can reuse this pass's reconciled count.
+  // A matching aggregate still does not prove an unobserved member participated.
+  const aggregateCounts = new Map<string, number>();
+  for (const run of runs.rows) {
+    const count = counts.get(run.resource_type);
+    if (count && typeof run.version === 'string' && count.version === run.version)
+      aggregateCounts.set(run.resource_type, count.count);
+  }
+  return { rows, types, runs: runs.rows as Run[],
+    aggregateCounts, participation: participation.rows as Run[], truncated, truncatedTypes };
 }
 
 const stamp = (value: unknown): number | null => {
@@ -155,14 +180,34 @@ const stamp = (value: unknown): number | null => {
   return Number.isFinite(ms) && ms > 0 ? ms : null;
 };
 
+interface InventorySource {
+  sourceId: string;
+  status: string;
+  capturedAtMs: number | null;
+  attemptedAtMs: number | null;
+  lastSuccessAtMs: number | null;
+  finishedAtMs: number | null;
+  reasons: string[];
+}
+/** Enrichment sources only add ownership/endpoint detail to a graph built from its core sources.
+ *  They never enter `details.sources`, so they cannot change the publication status, its
+ *  freshness or any reader's reason vocabulary. A usable enrichment source must have a fully
+ *  confirmed, fresh, untruncated ledger; anything else is withheld whole (`withheldTypes`) so a
+ *  partial owner list never feeds an inference. Their evaluation is kept in the unprojected
+ *  `details.enrichmentSources` for operators. */
 export function inventoryAttempt(snapshot: Awaited<ReturnType<typeof inventorySnapshot>>, types: string[],
-  cls: GraphClass, account: string, attemptedAt: string): GraphAttempt {
+  cls: GraphClass, account: string, attemptedAt: string,
+  enrichment: ReadonlySet<string> = new Set()): GraphAttempt & { withheldTypes: string[]; details: { sources: InventorySource[]; enrichmentSources?: InventorySource[] } } {
   const { rows, runs, aggregateCounts, participation, truncated } = snapshot;
+  const withheldTypes: string[] = [];
   // Every source this class can collect in this account contributes a coverage result.
   const required = [...new Set([...snapshot.types, ...types])];
   const limitedTypes = new Set(snapshot.truncatedTypes ?? (truncated ? required : []));
-  let safe = required.length > 0 && !truncated;
-  const sources = required.map(type => {
+  // Enrichment rows sort last, so a cap that cut only enrichment rows leaves core input whole.
+  const coreTruncated = truncated && (limitedTypes.size === 0 || [...limitedTypes].some(type => !enrichment.has(type)));
+  let safe = required.length > 0 && !coreTruncated;
+  const staleAfterMs = inventoryStaleAfterMs();
+  const evaluated = required.map(type => {
     const items = rows.filter(row => row.resource_type === type);
     const run = runs.find(row => row.resource_type === type && row.account_id === 'self');
     const point = participation.find(row => row.resource_type === type);
@@ -188,20 +233,30 @@ export function inventoryAttempt(snapshot: Awaited<ReturnType<typeof inventorySn
       : items.length > 0 && !countConfirmed ? ['count_not_confirmed']
       : !items.length && (!confirmedEmpty || unknownAttributes) ? ['empty_not_confirmed']
       : !lastSuccessAtMs || (items.length > 0 && capturedAtMs === null) ? ['unknown_capture'] : [];
-    if (blockers.length) safe = false;
     const reasons = [...blockers, ...(run && unknownAttributes ? ['unknown_attributes'] : []),
       ...(limitedTypes.has(type) ? ['payload_truncated'] : [])];
     const status = producerStatus === 'failed' ? 'error'
       : producerStatus === 'running' || producerStatus === 'partial' ? 'partial'
       : producerStatus === 'unknown' || !lastSuccessAtMs || unknownScope ? 'unavailable'
       : reasons.length ? 'partial' : items.length ? 'ok' : 'empty';
-    return { sourceId: `inventory:${type}`, scope: 'account',
+    const source = { sourceId: `inventory:${type}`, scope: 'account',
       status, producerStatus, reasons, itemCount: limitedTypes.has(type) ? null : items.length, capturedAtMs, lastSuccessAtMs,
       attemptedAtMs: stamp(run?.started_at), finishedAtMs: stamp(run?.finished_at) };
+    if (enrichment.has(type)) {
+      const fresh = lastSuccessAtMs !== null && Date.now() - lastSuccessAtMs <= staleAfterMs;
+      if (reasons.length || !fresh) withheldTypes.push(type);
+      return { enrichment: true as const, type, source: { ...source, ...(fresh ? {} : { stale: true }) } };
+    }
+    if (blockers.length) safe = false;
+    return { enrichment: false as const, type, source, items: items.length };
   });
+  const sources = evaluated.filter(e => !e.enrichment).map(e => e.source);
+  const enrichmentSources = evaluated.filter(e => e.enrichment).map(e => e.source);
+  const coreRows = evaluated.reduce((n, e) => n + (e.enrichment ? 0 : e.items), 0);
   const status = sources.some(s => s.status === 'error') ? 'error'
     : !sources.length || sources.some(s => s.status === 'unavailable') ? 'unavailable'
-    : truncated || sources.some(s => s.status === 'partial') ? 'partial' : rows.length ? 'ok' : 'empty';
-  return { status, attemptedAt, publish: safe,
-    details: { sources, ...(truncated ? { inputTruncated: true } : {}) } };
+    : coreTruncated || sources.some(s => s.status === 'partial') ? 'partial' : coreRows ? 'ok' : 'empty';
+  return { status, attemptedAt, publish: safe, withheldTypes,
+    details: { sources, ...(coreTruncated ? { inputTruncated: true } : {}),
+      ...(enrichmentSources.length ? { enrichmentSources } : {}) } };
 }

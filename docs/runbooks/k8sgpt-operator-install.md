@@ -33,13 +33,13 @@ the operator controller's own chart-managed permissions.
 ## 조치 / Action — deterministic-only operator install
 
 The operator MUST be installed **deterministic-only** per ADR-006 (H0 refinement + the deterministic-only / version-pin rules):
-- **NO `ai.backend` / NO `--explain`** — K8sGPT runs deterministic analyzers only; all LLM narration is AWSops-side (AgentCore Haiku 4.5, in-region). K8sGPT v0.4.33's `amazonbedrock` backend has a stale model+region allow-list (no Haiku 4.5, no `ap-northeast-2`), so it is deliberately not used.
+- **NO `ai.backend` / NO `--explain`** — K8sGPT runs deterministic analyzers only; all LLM narration is AWSops-side (AgentCore, Haiku-class model, in-region). K8sGPT v0.4.33's `amazonbedrock` backend has a stale model+region allow-list (no current Haiku-class model, no `ap-northeast-2`), so it is deliberately not used.
 - **`--anonymize`** (`k8sgpt.deployAnonymized=true`) as defense-in-depth (Rule 5). Note: anonymize does **not** mask Event/Describe/ContainerStatus/ConfigMap values / env-var names / image URIs.
 - **`--fix` OFF at the config level** (Rule 9 — defense-in-depth, not merely "not called"): no remediation block in the `K8sGPT` CR.
 - **Pinned operator version** (Rule 7 — the version is part of the schema-compat contract).
 
 오퍼레이터는 ADR-006(H0 정제 + deterministic-only/버전-핀 규칙)에 따라 반드시 **deterministic-only** 로 설치합니다:
-- **`ai.backend` 없음 / `--explain` 없음** — K8sGPT는 결정론적 analyzer만 실행하고, 모든 LLM 서술은 AWSops 측(AgentCore Haiku 4.5, in-region)에서 수행합니다. K8sGPT v0.4.33의 `amazonbedrock` 백엔드는 모델/리전 allow-list가 오래되어(Haiku 4.5 없음, `ap-northeast-2` 없음) 의도적으로 사용하지 않습니다.
+- **`ai.backend` 없음 / `--explain` 없음** — K8sGPT는 결정론적 analyzer만 실행하고, 모든 LLM 서술은 AWSops 측(AgentCore, Haiku급 모델, in-region)에서 수행합니다. K8sGPT v0.4.33의 `amazonbedrock` 백엔드는 모델/리전 allow-list가 오래되어(현행 Haiku급 모델 없음, `ap-northeast-2` 없음) 의도적으로 사용하지 않습니다.
 - **`--anonymize`** (`k8sgpt.deployAnonymized=true`) — 다층 방어(Rule 5). 단, anonymize는 Event/Describe/ContainerStatus/ConfigMap 값 / 환경변수 이름 / 이미지 URI를 마스킹하지 **않습니다**.
 - **`--fix` 설정 레벨 비활성** (Rule 9 — "호출 안 함"이 아니라 구성 자체에서 차단): `K8sGPT` CR에 remediation 블록 없음.
 - **버전 핀**(Rule 7 — 버전은 스키마 호환 계약의 일부).
@@ -87,17 +87,19 @@ grant workload writes, Secret reads, or cluster-admin to the application princip
   which already covers broad reads. If the host uses a tighter policy, map an
   explicit group on that role's Access Entry and bind only the Result-read rule.
 - **Member cluster:** the actual bearer uses the registered member role, normally
-  `AWSopsReadOnlyRole`. Use `AmazonEKSViewPolicy` plus the minimal node-read binding
-  described in [EKS onboarding](../reference/07-eks.md). Never attach AdminView to
-  this shared member role. The managed View policy does not grant this custom CRD,
-  so bind the Result reader to the member Entry's `awsops:eks-readonly` group.
+  `AWSopsReadOnlyRole`. Its Entry uses `AmazonEKSViewPolicy` only, as described in
+  [EKS onboarding](../reference/07-eks.md). Never attach AdminView to this shared
+  member role. The managed View policy does not grant this custom CRD, so add a
+  Kubernetes group such as `awsops:eks-readonly` to the member Entry (entries from
+  the earlier onboarding guide already carry it) and bind the Result reader to it.
   An Entry/group for only the host web task role does not authorize member reads.
 - **Explicit auth:** bind the selected same-member IAM role's Entry group, or the
   exact ServiceAccount name/namespace for an SA token. Do not use a broad group
   such as `system:authenticated` to avoid selecting the real principal.
 
 The cluster owner applies the following client-read binding. For the default
-member path, the group is `awsops:eks-readonly`; for a tighter host or explicit
+member path, use the group added to the member Entry (for example
+`awsops:eks-readonly`); for a tighter host or explicit
 identity, substitute the verified group actually mapped by that identity's Entry.
 Add a group to an existing Entry without discarding its unrelated groups.
 

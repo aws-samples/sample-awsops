@@ -85,12 +85,13 @@ class TestLoad(unittest.TestCase):
                 dh.load_datasource("clickhouse")
 
     def test_load_datasource_instance_id_pure_arg(self):
-        # per-instance id key wins; falls back to the kind-mirror when the id key is absent/blank.
+        # an explicit id resolves only its own id key; the kind mirror serves only the no-id path.
         m = {"5": {"endpoint": "http://prom-a:9090"}, "prometheus": {"endpoint": "http://prom-default:9090"}}
         with mock.patch.object(dh, "_load_secret_map", return_value=m):
             self.assertEqual(dh.load_datasource("prometheus", instance_id=5)["endpoint"], "http://prom-a:9090")
             self.assertEqual(dh.load_datasource("prometheus")["endpoint"], "http://prom-default:9090")  # kind mirror
-            self.assertEqual(dh.load_datasource("prometheus", instance_id=999)["endpoint"], "http://prom-default:9090")  # missing id → mirror
+            with self.assertRaises(dh.NotConnected):
+                dh.load_datasource("prometheus", instance_id=999)
 
     def test_warm_container_no_bleed(self):
         # an inline conn set on one invocation must not bleed into a later instance_id invocation.
@@ -115,10 +116,14 @@ class TestHttp(unittest.TestCase):
         class _R:
             def __init__(self, code):
                 self._c = code
+                from io import BytesIO
+                self.body = BytesIO(b'{"ok":1}')
             def getcode(self):
                 return self._c
-            def read(self):
-                return b'{"ok":1}'
+            def read(self, size=-1):
+                return self.body.read(size)
+            def close(self):
+                self.body.close()
         with mock.patch.object(dh._opener, "open", return_value=_R(200)):
             status, data = dh.http_json("GET", "http://ch:8123/ping")
         self.assertEqual(status, 200)
@@ -299,6 +304,7 @@ class TestHttpsPinning(unittest.TestCase):
 
         self.server = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
         server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        server_ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         server_ctx.load_cert_chain(certfile=self.certfile, keyfile=self.keyfile)
         self.server.socket = server_ctx.wrap_socket(self.server.socket, server_side=True)
         self.port = self.server.server_port

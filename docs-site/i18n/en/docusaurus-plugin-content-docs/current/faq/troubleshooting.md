@@ -70,7 +70,7 @@ When SCP (Service Control Policy) or an IAM boundary blocks specific AWS APIs, o
 | `ce:GetCostAndUsage` | Cannot query Cost data |
 | `cloudwatch:GetMetricData` | Cannot query metrics/graphs |
 
-A denied API read is incomplete evidence, not proof of an empty AWS resource set. The IAM-role query retries once without `attached_policy_arns`, but still performs `GetRole` and instance-profile lookups and may fail. Successful fallback refreshes base rows with the policy list unassessed; if both queries fail, last-good rows remain and the type is failed. Other reachability/write outcomes can still make the run partial or failed. Use `inventory_sync_hydrate_fallback.remedy` to distinguish confirmed capacity and permission problems; changing refill cannot fix an IAM/SCP denial. The user-MFA query has no role-policy fallback (ADR-010, 2026-09-02). Ask an operator to review necessary read permissions, or ask the AI assistant for a clearly scoped answer using the available data.
+A denied API read is incomplete evidence, not proof of an empty AWS resource set. The IAM-role query retries once without `attached_policy_arns`, but still performs `GetRole` and instance-profile lookups and may fail. Successful fallback refreshes base rows with the policy list unassessed; if both queries fail, last-good rows remain and the type is failed. Other reachability/write outcomes can still make the run partial or failed. Use `inventory_sync_hydrate_fallback.remedy` to distinguish confirmed capacity and permission problems; changing refill cannot fix an IAM/SCP denial. The user-MFA query has no role-policy fallback . Ask an operator to review necessary read permissions, or ask the AI assistant for a clearly scoped answer using the available data.
 
 ## Pages load slowly
 
@@ -115,7 +115,7 @@ Stale jobs are reconciled automatically by the reaper (every 5 minutes). A job w
 
 The AI assistant reads live AWS data with read-only tools (about 160) and persists conversations in Aurora.
 
-1. **Read-only by design** — AWSops never changes AWS resources. A request to "modify/delete a resource" being refused — or answered only as diagnosis/guidance — is expected behavior (permanent read-only posture).
+1. **Read-only by design** — The AI assistant never changes AWS resources. A request to "modify/delete a resource" being refused — or answered only as diagnosis/guidance — is expected behavior (chat is read-only and AWS-resource changes are frozen).
 2. **Permission errors** — If a particular query fails with AccessDenied, read permission for that service is blocked. The blocked scope is excluded from the answer and the assistant responds with whatever data it can read.
 3. **Conversation disappeared** — Conversations are persisted in Aurora and can be reopened from the sidebar. If you don't see them, the session (login) likely changed or expired.
 
@@ -137,5 +137,5 @@ External record/ticket/message writes are an optional feature governed by policy
 3. **Credentials** — External service tokens/webhooks are stored in Secrets Manager. An expired or mistyped value makes the send fail.
 
 :::info
-An external write is the creation of a **data record (message/ticket)**, not an AWS-resource change. AWS-resource mutation and autonomous execution remain permanently frozen.
+An external write is the creation of a **data record (message/ticket)**, not an AWS-resource change. AWS-resource mutation and autonomous execution remain frozen.
 :::

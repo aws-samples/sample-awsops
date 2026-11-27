@@ -41,7 +41,7 @@ describe('getDiagSignals', () => {
     // The worker sweeps generated rows when the flag goes off, but only if it RUNS — with workers or the
     // daily job paused they would keep being served after the gate closed, so the read path gates too.
     await getDiagSignals(7);
-    expect(query.mock.calls[0][0]).toMatch(/provenance.*IS DISTINCT FROM 'generated'/s);
+    expect(query.mock.calls[0][0]).toMatch(/provenance[\s\S]*IS DISTINCT FROM 'generated'/);
     expect(query.mock.calls[0][1]).toEqual([7, false]);
     process.env.DIAG_SIGNAL_QUERYGEN_ENABLED = 'true';
     await getDiagSignals(7);

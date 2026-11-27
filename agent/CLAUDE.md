@@ -17,15 +17,16 @@ Strands Agent for AgentCore Runtime. Connects to 9 domain gateways via MCP proto
   alias and the canonical-vs-`v2-`-prefixed key coexistence shim (see the do-not-"fix" note in
   root `AGENTS.md`).
 - `streamable_http_sigv4.py` — MCP StreamableHTTP with AWS SigV4 signing
-- `Dockerfile` — Python 3.11-slim, arm64, port 8080
-- `requirements.txt` — strands-agents, boto3, bedrock-agentcore, psycopg2-binary
+- `Dockerfile` — Python 3.14-slim, arm64, port 8080
+- `requirements-runtime.txt` — shared exact image/runtime pins for Strands, AgentCore,
+  boto3/botocore and MCP; MCP 1.x retains the SigV4 transport contract and rejects redirects.
+- `requirements.txt` — runtime requirements plus the host-only AgentCore starter toolkit.
 - `lambda/` — Lambda source files (see `agent/lambda/CLAUDE.md` for the current provisioner and
   tool-inventory sources)
 
-## Gateways and routes — don't hand-count them here
-The gateway count, per-gateway tool counts, and the chat routing-key list have drifted stale in
-this file before (9 domain gateways incl. `external-obs`; 16 chat-section keys). Rather than
-re-introduce a hand-maintained table that goes stale again, read the actual source:
+## Gateways and routes
+Don't keep gateway counts, per-gateway tool counts or the chat routing-key list in this file;
+read them from the source:
 - Gateway/tool inventory: `scripts/v2/agentcore/catalog.py` (the live v2 provisioner catalog)
   and `ai.tf`'s `local.agent_lambdas`.
 - Chat routing keys: `web/lib/route.ts`'s `RULES` (regex fast-path, first-match-wins) — the
@@ -47,7 +48,7 @@ re-introduce a hand-maintained table that goes stale again, read the actual sour
 - Real-time response delivery via SSE streaming.
 
 ## Rules
-- Offline checks: `cd agent && python3 -m pytest test_agent.py test_readiness.py -q`.
+- Offline checks: `cd agent && python3 -m pytest test_agent.py test_readiness.py test_pinned_http.py -q`.
 - `fixtures/*-contract.json` is shared with `web/lib/trace-source.test.ts` and
   `web/lib/graph-read-postgres.test.ts` (Tempo publication/retention cases).
   Lambda completion tests bind mocked HTTP payloads to those exact producer bodies;

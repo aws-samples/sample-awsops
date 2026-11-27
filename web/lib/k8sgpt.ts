@@ -1,5 +1,5 @@
 // web/lib/k8sgpt.ts
-// ADR-035 H1–H2 AWSops-side substrate. K8sGPT runs DETERMINISTIC-ONLY (operator, out-of-band);
+// ADR-006[legacy 035] H1–H2 AWSops-side substrate. K8sGPT runs DETERMINISTIC-ONLY (operator, out-of-band);
 // AWSops reads the Result CRDs (P3-D STS path), adapts them (Rule 7), dedups+persists (Rule 11),
 // and narrates them with the Container AgentCore agent (Haiku 4.5, ap-northeast-2) keeping the
 // deterministic analyzer_result (FACT) structurally separate from llm_explanation (HYPOTHESIS, Rule 8).
@@ -168,10 +168,10 @@ async function lastScanTimestamp(cluster: string): Promise<string | null> {
   return rows[0]?.scanned_at ? new Date(rows[0].scanned_at).toISOString() : null;
 }
 
-// --- H3a SEAM (ADR-035 Rule 4/6) — thin, twice-gated, NOT auto-invoked ---
+// --- H3a SEAM (ADR-006[legacy 035] Rule 4/6) — thin, twice-gated, NOT auto-invoked ---
 //
-// Turn a deterministic K8sGPT finding into an ADR-032 incident, which (when
-// incident_lifecycle_enabled) drives correlation/RCA → ADR-034 write-back → ADR-029/036
+// Turn a deterministic K8sGPT finding into an ADR-006[legacy 032] incident, which (when
+// incident_lifecycle_enabled) drives correlation/RCA → ADR-006[legacy 034] write-back → ADR-005[legacy 029]
 // remediation PROPOSALS (catalog enabled=false, gated by remediation_enabled). NO auto-apply.
 //
 // GATED TWICE + NOT auto-called: returns {decision:'disabled'} unless BOTH K8SGPT_ENABLED and the
@@ -185,7 +185,7 @@ export async function raiseIncidentFromFinding(cluster: string, f: AnalyzerResul
   // gate #2 (INCIDENT_LIFECYCLE_ENABLED) is enforced inside triageAndCreateOrLink → {decision:'disabled'}.
   const event: AlertEvent = {
     id: `k8sgpt:${cluster}:${f.fingerprint}`,
-    source: 'generic',                    // ADR-032 trigger_source; K8sGPT is a sensor input
+    source: 'generic',                    // ADR-006[legacy 032] trigger_source; K8sGPT is a sensor input
     alertName: `[K8sGPT/${cluster}] ${f.analyzer} ${f.resourceName}`,
     severity: 'warning',                  // deterministic finding default; UI may override at raise-time
     status: 'firing',
@@ -197,7 +197,7 @@ export async function raiseIncidentFromFinding(cluster: string, f: AnalyzerResul
     resources: [`eks:${cluster}/${f.resourceName}`], // ADR-006 cross-boundary anchor (Rule 6)
     rawPayload: { kind: 'k8sgpt-finding', cluster, fingerprint: f.fingerprint }, // FACT provenance, no hypothesis
   };
-  const tri = await triageAndCreateOrLink(event); // ADR-032 gate (INCIDENT_LIFECYCLE_ENABLED) inside
+  const tri = await triageAndCreateOrLink(event); // ADR-006[legacy 032] gate (INCIDENT_LIFECYCLE_ENABLED) inside
   if (tri.decision === 'New' && tri.incidentId) await enqueueInitialStage(tri.incidentId);
   return tri;
 }

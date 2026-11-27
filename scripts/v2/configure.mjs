@@ -20,6 +20,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { input, select, checkbox, confirm } from '@inquirer/prompts';
+import { hclString } from './hcl-string.mjs';
 
 const REGION = process.env.AWS_REGION || 'ap-northeast-2';
 
@@ -113,10 +114,6 @@ function eksAuthMode(name) {
 // HCL writers
 // ---------------------------------------------------------------------------
 
-function hclString(v) {
-  return `"${String(v).replace(/"/g, '\\"')}"`;
-}
-
 function hclStringList(arr) {
   return `[${arr.map(hclString).join(', ')}]`;
 }
@@ -151,7 +148,7 @@ function buildTfvars(cfg) {
   // These were previously hand-added to terraform.tfvars and silently lost on a `make configure`
   // regenerate (→ a follow-up apply would destroy the gated infra); they are now first-class here.
   if (cfg.agentcoreEnabled) lines.push('agentcore_enabled         = true');
-  if (cfg.integrationsEnabled) lines.push('integrations_enabled      = true'); // ADR-039 P2-infra inc2 (needs agentcore)
+  if (cfg.integrationsEnabled) lines.push('integrations_enabled      = true'); // ADR-007[legacy 039 P2-infra] inc2 (needs agentcore)
   if (cfg.workersEnabled) lines.push('workers_enabled           = true');
   if (cfg.steampipeEnabled) lines.push('steampipe_enabled         = true');
   if (cfg.hybridRoutingEnabled) lines.push('hybrid_routing_enabled    = true');
@@ -379,7 +376,7 @@ async function main() {
     message: 'Provision the AgentCore skeleton (9 gateways + runtime + slice tools)? You run `make agentcore` after apply.',
     default: readExistingFlag('agentcore_enabled'),
   });
-  // ADR-039 P2-infra inc2 — egress Integrations (live external-MCP connect; scoped Secrets Manager +
+  // ADR-007[legacy 039 P2-infra] inc2 — egress Integrations (live external-MCP connect; scoped Secrets Manager +
   // dedicated KMS). Only meaningful with AgentCore (the TF local is agentcore_enabled && integrations_enabled).
   const integrationsEnabled = agentcoreEnabled
     ? await confirm({
@@ -396,7 +393,7 @@ async function main() {
     default: readExistingFlag('steampipe_enabled'),
   });
   const hybridRoutingEnabled = await confirm({
-    message: 'Enable hybrid chat routing (ADR-038 regex + Haiku classifier)?',
+    message: 'Enable hybrid chat routing (ADR-003[legacy 038] regex + Haiku classifier)?',
     default: readExistingFlag('hybrid_routing_enabled'),
   });
   // eks_auto_register reuses the workers pg8000 layer → only offered when workers are on.

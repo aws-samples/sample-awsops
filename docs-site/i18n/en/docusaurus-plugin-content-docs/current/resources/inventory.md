@@ -52,7 +52,7 @@ Search matches across every visible column value, so typing part of an IP, a nam
 :::
 
 :::info Read-only collection
-**Refresh** only re-reads the current state — it never changes resources. AWSops observes and diagnoses AWS resources only and makes no changes. Collection times are shown in KST (Asia/Seoul).
+**Refresh** only re-reads the current state — it never changes resources. Inventory collection only observes AWS resources and makes no changes. Collection times are shown in KST (Asia/Seoul).
 :::
 
 :::tip Mobile

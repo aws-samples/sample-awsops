@@ -19,9 +19,9 @@
     "message": "AI アシスタント",
     "description": "The label of footer link with label=AI 어시스턴트 linking to /getting-started/ai-assistant"
   },
-  "link.item.label.Dashboard": {
-    "message": "ダッシュボード",
-    "description": "The label of footer link with label=Dashboard linking to https://awsops.atomai.click/"
+  "link.item.label.GitHub": {
+    "message": "GitHub",
+    "description": "The label of footer link with label=GitHub linking to https://github.com/aws-samples/sample-awsops"
   },
   "link.item.label.Amazon Bedrock": {
     "message": "Amazon Bedrock",

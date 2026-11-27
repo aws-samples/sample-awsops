@@ -96,6 +96,8 @@ secrets-manager) — installed by `make deps`.
 - `v2/ci/prepare-runtime-host.mjs` requires actual login/DB/host-registry proof before manual full dev activation plans; apply rechecks the approved profile. Automatic PR/push plans never receive the host-probe credential. Database-only proof is rejected; credentials stay private and failures use a fixed code. Flags/policy checks do not prove live access.
 - `v2/agentcore/provision.py` maps the applied `agentcore.deployment_readiness_enabled` boolean
   to `DEPLOYMENT_READINESS_ENABLED`; missing/false is off and shell overrides are ignored.
+- `v2/agentcore/provision.py` maps the applied `agentcore.chat_section_handoff_enabled` boolean
+  to `CHAT_SECTION_HANDOFF_ENABLED`; missing/false is off and shell overrides are ignored.
 
 - `v2/ci_tf_assets.py` prepares hash-locked pg8000 layers and transports plan/SHA/scope-bound
   Lambda assets, validating paths, modes and hashes. Pack requires every ZIP with a known
@@ -217,7 +219,7 @@ secrets-manager) — installed by `make deps`.
   rollout's public zone name/ID/NS. The readiness summary adds fixed scope/presence checks and
   a known configured collector hash. Diagnostics also publish bounded numeric metric values;
   never raw configuration, ARNs, account IDs, state or plans.
-- `v2/terraform-test.sh` — Terraform 1.15.7 validate/mock tests in a disposable tracked-file
+- `v2/terraform-test.sh` — Terraform 1.17.1 validate/mock tests in a disposable tracked-file
   copy, `init -backend=false`, fresh data dir, no deployment credentials or real backend.
   `v2/requirements-test.txt` declares pytest/PyYAML; the shared merge script runs Node smoke tests.
 - `v2/workers.mjs` — `make workers`: builds and pushes the worker image **only**. The Fargate
@@ -269,7 +271,7 @@ secrets-manager) — installed by `make deps`.
   full web/collection/worker release gate. Exact timing and wire contracts: `docs/reference/05-agentcore.md`.
 - `v2/*.itest.mjs` — migration integration tests against a disposable PostgreSQL 17 container.
 - `v2/ci/*.test.mjs` — migration runtime/controller/workflow tests and mocked Terraform plans; install locked scripts/v2
-  dependencies with `npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund`; Python PyYAML, boto3/botocore (`pip install -r agent/requirements.txt`) and Terraform 1.15.7 are also required.
+  dependencies with `npm ci --prefix scripts/v2 --ignore-scripts --no-audit --no-fund`; Python PyYAML, boto3/botocore (`pip install -r agent/requirements.txt`) and Terraform 1.17.1 are also required.
   `v2/ci/migration.itest.mjs` includes initializer regressions. It,
   `v2/ci/web-db-connection.itest.mjs`, and `v2/ci/agent-tool-policy.itest.mjs` are **required fail-hard exceptions** to the legacy
   optional itest convention: bare `docker` on PATH, OpenSSL, postgres:17,
@@ -282,57 +284,12 @@ secrets-manager) — installed by `make deps`.
   dependencies for the disposable fixture. Merge Verify runs it alongside all migration cases.
 - `v2/upgrade.sh` — `make upgrade`: RDS snapshot → migrate → deploy. Previews unless
   `CONFIRM=go`.
-- `pr-review/` — two-vendor review panel: `run-panel.sh` (two parallel comprehensive reports,
-  each combining all four checklist prompts), `synthesize.sh` (chair synthesis), `lib.sh` (slots, scrubbing, response/coverage checks).
-  `image_capability.py` is the separate manual diagnostic, not a panel or gate override;
-  its source contract and offline test entry are listed above.
-  Python review helpers use isolated mode (`-I`), excluding application-CWD and
-  PYTHONPATH module shadowing while model-phase credentials are active.
-  `review-limits.json` binds raw/scrubbed diff, report and chair-stdin budgets.
-  `chair_stdin_bytes` measures only synth-stdin.txt (diff + reports + short headers);
-  synth-prompt.txt/image-context text is a separate CLI argument. The max-budget
-  fixture verifies that distinction; do not add argument bytes to a stdin-only limit.
-  `report-panel-failure.sh` publishes fixed diagnostics and unadjudicated severity-keyword presence booleans with
-  named missing vendors and separate lens/image/report diagnostics, never approval.
-  `input_scope.py` admits only complete filtered diffs within 6,000 lines/128 KiB and
-  complete hash-valid image evidence before model credentials; no partial review.
-  Both panel reports require substantive sections for every L2–L5 checklist, including
-  security L3, plus plain `LENS_COVERAGE: L2,L3,L4,L5`. Missing panel coverage
-  skips chair calls; report truncation cannot approve unseen findings. Oversized
-  promotion diffs still need a separately reviewed complete-batching/reuse design.
-  `review_context.py` pins the trusted CI checkout and reviewed PR/base metadata.
-  `image-formats.json` selects detected extensions and the approved codec for both staging
-  and `render_head_image.py`; unknown-codec entries remain explicit coverage failures.
-  Admit records against both metadata and rendered-context budgets; preserve admitted images
-  and fixed omission reasons. Check renamed blob sizes before reading.
-  `image-requirements.txt` pins the Python 3.12 binary dependency.
-  `stage_head_pngs.py` stages bounded regular HEAD raster Git blobs as read-only data before
-  review credentials; prompts use 200-character safe path labels, exact names stay in JSON data.
-  Codex receives hash-checked `--image` attachments; Claude Read uses the same generated files.
-  BASE pixels are historical, never replacement evidence for changed HEAD images.
-  `image_coverage.py` validates bounded full reports before truncation/verdict: each of
-  both vendor reports plus chair must declare plain `IMAGE_COVERAGE: COMPLETE` when images
-  are staged. Explicit failure always blocks; quoted/fenced/prose examples do not count.
-  Missing/unsupported required image evidence fails coverage; no finding suppression,
-  HEAD execution or added permissions. See `docs/runbooks/pr-review-head-images.md`.
-  Per-entry unavailable evidence preserves good files and publishes a deterministic FAIL.
-  Preparation faults also reach a fixed failure comment after context/diff validation.
-  The existing panel-prompt structure runner executes both pipeline and image fixture suites.
-  Static PNG/WebP/single-rendition ICO use hash-pinned Pillow 12.3.0 on Python 3.12; isolated
-  decode has CPU/memory/time/output bounds. Keep original blob/hash and render lineage.
-  32 attempts/files bound each change batch; animations/renditions never silently truncate.
-  Response presence stays counted on image failure. Normalize terminal controls, reserve
-  declaration prefixes (decorated failures block), and diagnose unreadable reports separately.
-  Only the accepted chair needs required coverage; discarded invalid output without a
-  declaration can recover. Explicit/malformed failures and panel failures remain sticky.
-  Omitted-path diagnostics use safe labels; gate reasons are quoted environment data.
-  `v2/ci_review_access.py` produces the protected-environment/IAM trust plan without API writes.
-  - **Every Claude panel/chair call MUST pass `--strict-mcp-config`.** A user-scope MCP server (e.g. github)
-    loads at session init; if its auth is broken, `claude -p` waits silently for the tool until
-    `CHAIR_TIMEOUT` (currently 900s) with no error — killing both primary and fallback chairs
-    and failing the gate regardless of the diff (observed: PR #194/#197/#202/#203).
-    `--allowedTools` is a permission allowlist and does not stop MCP loading, so it is not a
-    substitute.
+- `pr-review/` prepares exact-commit patches and sandboxed HEAD image evidence for the
+  official Claude Code Action on Amazon Bedrock. `claude_scope.py` produces the review index;
+  `claude_verdict.py` requires complete coverage and blocks major and critical findings.
+  The prior panel and chair scripts, limits and tests are retained as historical helpers.
+  `image_capability.py` is a separate operator diagnostic. See
+  `docs/runbooks/pr-review-head-images.md` for inputs, bounds and failure handling.
 
 ## Migration Filename Rule
 - `terraform/foundation/migrations/<ULID>_<snake_name>.sql`
@@ -402,9 +359,9 @@ full readiness (including login/DB); prepare only verifies
 authenticated login/DB/host registration. Explicit runtime/readiness activation remains
 separate, and inactive prerequisites cannot be skipped.
 The controller verifies dev source/account/role, applied runtime metadata and ARM64
-web digest, requires every pinned baseline member (currently 43, source-AST checked)
+web digest, requires every pinned baseline member (currently 49, source-AST checked)
 and permits valid growth up to 128 types, then drives every returned
-type (currently 43) with at most four
+type (currently 49) with at most four
 concurrent in-flight synchronous invocations. It requires succeeded results, known counts and zero unknowns.
 It samples the authenticated DB clock before collecting, anchors calibration at request
 start, shifts the existing deadline by the same offset, and retains strict post-marker
@@ -415,7 +372,7 @@ require the exact enabled host/member registry before type calls, measured SQL r
 with zero unreachable accounts, and fresh account-bound known EC2/CloudFront member rows.
 `account_reachability_scope` distinguishes `enabled_scan_accounts` measurement from host-only
 and unmeasured results; the latter counts stay null. CI permits host-only/null only for
-the five source-AST-pinned SDK types. The aggregate 43-type proof does not establish 43-type coverage for every member.
+the five source-AST-pinned SDK types. The aggregate 49-type proof does not establish 49-type coverage for every member.
 Member evidence uses one exact, bounded `/api/deployment/member-inventory` response,
 never a scan of full inventory pages.
 Only Terraform plan/apply onboarding preflight permits approved subsets; apply reads
@@ -462,7 +419,7 @@ Catalog/per-type timeouts:
 `remaining_prerequisites: "not_assessed"` preserves separate workflow/plan/promotion gates.
 Use the canonical [fixed-code operator table](../docs/runbooks/runtime-foundation.md#fixed-diagnostics-and-remaining-prerequisites).
 Combined tests: `node --test scripts/v2/ci/runtime-release.test.mjs scripts/v2/deployment-smoke.test.mjs`.
-The owner requires all current types, superseding the earlier CloudFront-only proposal.
+The owner requires all current types.
 Four lanes are a concurrency ceiling, not a throughput guarantee; the active schedule
 and shared limiter can cause throttling or incomplete data. Budgets fail closed rather
 than promise every workload fits. Preserve the recorded feasibility sample and its

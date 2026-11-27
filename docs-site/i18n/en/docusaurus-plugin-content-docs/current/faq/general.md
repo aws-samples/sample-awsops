@@ -22,7 +22,7 @@ AWSops is a **real-time, read-only operations dashboard + AI diagnosis** tool fo
 The platform is a **Terraform-based MSA** — live AWS queries go through **Amazon Bedrock AgentCore MCP tools**, and app state is persisted in **Aurora Serverless v2 (PostgreSQL 17)**.
 
 :::info
-AWSops is a **read-only** operations tool. It queries, visualizes, and diagnoses your infrastructure, but it does not change AWS resources. See "Does AWSops change my infrastructure?" below for details.
+AWSops is a **read-only-by-default** operations tool. It queries, visualizes, and diagnoses your infrastructure and, apart from two owner-approved, default-off exceptions, does not change AWS resources. See "Does AWSops change my infrastructure?" below for details.
 :::
 
 ## How is it deployed and how does it work?
@@ -33,7 +33,7 @@ AWSops is a microservice architecture provisioned with **Terraform** (`terraform
 |-------|-------------|
 | **IaC** | Terraform (S3 partial backend, `use_lockfile`). CDK is dropped |
 | **Edge** | CloudFront (TLS) → VPC Origin (`https-only:443`) → internal ALB HTTPS:443 (regional ACM) → Fargate. **No public ALB** |
-| **Compute** | ECS Fargate (arm64). web is a Next.js 15 thin-BFF served at the **root path (`/`)** |
+| **Compute** | ECS Fargate (arm64). web is a Next.js 16 thin-BFF served at the **root path (`/`)** |
 | **Data** | Aurora Serverless v2 (PostgreSQL 17), accessed via node-pg |
 | **AI** | AgentCore Runtime + MCP Lambda tools across 9 section gateways (live query) |
 | **Async workers** | SQS → ESM (kill-switch) → dispatcher Lambda → Step Functions → Lambda or Fargate |
@@ -46,11 +46,11 @@ The edge is **end-to-end TLS**. CloudFront connects to the internal ALB over TLS
 
 ## Does AWSops change my infrastructure?
 
-**No.** AWSops is a **read-only operations dashboard + AI diagnosis** tool. **AWS-resource mutation and autonomy are permanently frozen (do-not-enable).** No screen and no AI feature will stop an EC2 instance, modify a security group, or alter your infrastructure.
+**No.** AWSops is a **read-only operations dashboard + AI diagnosis** tool. **AWS-resource mutation and autonomy are frozen (do-not-enable).** No screen and no AI feature will stop an EC2 instance, modify a security group, or alter your workload infrastructure. The only exceptions are two owner-approved, default-off operations, both limited to the AWSops stack's own resources: restarting its own web service when the Aurora secret rotates, and creating or updating one connector target on its own AgentCore gateway when an administrator adds a datasource (no delete or gateway-management authority).
 
 The AI assistant and diagnosis **query** live data to analyze and diagnose it — they perform no mutation. All ~160 AgentCore MCP Lambda tools are read-only.
 
-The only "write" permitted, under governance, is **external data records** — for example, leaving a report, ticket, or message in an external system. This works only under the following guards:
+Beyond those two exceptions, the only "write" permitted, under governance, is **external data records** — for example, leaving a report, ticket, or message in an external system. This works only under the following guards:
 
 - SSRF guard (metadata/IMDS blocked, destination allowlist)
 - secrets managed in Secrets Manager
@@ -59,7 +59,7 @@ The only "write" permitted, under governance, is **external data records** — f
 - flag-OFF by default
 
 :::info
-External "writes" are **data records** (tickets, messages, reports), **not AWS-resource changes**. No path grants permission to change the AWS infrastructure itself.
+External "writes" are **data records** (tickets, messages, reports), **not AWS-resource changes**. No external-write path grants permission to change the AWS infrastructure itself.
 :::
 
 ## How do I log in?
@@ -96,7 +96,7 @@ The app accesses Aurora via **node-pg** (the shared pool in `web/lib/db.ts`). Th
 Live AWS / Kubernetes data is queried through **AgentCore MCP Lambda tools**. About 160 read-only tools are distributed across **9 section gateways** (network · container · data · security · cost · monitoring · iac · ops · external-obs).
 
 - All tools are read-only.
-- The gateway count is **9** (ADR-004 as amended 2026-06-24) — external-obs, hosting the Prometheus·ClickHouse connectors, is provisioned and routed as the ninth.
+- The gateway count is **9**  — external-obs, hosting the Prometheus·ClickHouse connectors, is provisioned and routed as the ninth.
 - It no longer relies on a local Steampipe service (127.0.0.1:9193) or direct access to 380 tables.
 
 ## Can it query external observability data (Prometheus / Loki / Tempo / ClickHouse / Datadog)?
@@ -113,7 +113,7 @@ Components:
 - **NL→query chat injection** — the AI assistant turns natural-language questions into datasource queries
 
 :::info
-Connector input is **SSRF-guarded and size-bounded** (`readJsonBounded` before parse, metadata/IMDS blocked). The datasource platform only **reads** external data; it does not change AWS resources.
+Connector input is **SSRF-guarded and size-bounded** (`readJsonBounded` before parse, metadata/IMDS blocked). The datasource platform only **reads** external data. Only when the default-off `connector_target_sync_enabled` flag is on does adding a datasource create or update that connector's one target on the stack's own AgentCore gateway; no other AWS resource is changed.
 :::
 
 ## Does it support theming and mobile?

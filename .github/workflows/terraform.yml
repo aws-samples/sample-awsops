@@ -32,12 +32,12 @@ name: Terraform
 on:
   pull_request:
     branches: [main, dev]
-    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_plan_context.py", "scripts/v2/ci_plan_inspect.py", "scripts/v2/ci_private_plan.py", "scripts/v2/ci_readiness_plan_summary.py", "scripts/v2/ci_failure_diagnostics.py", "scripts/v2/ci_dns_policy.py", "scripts/v2/ci_dev_domain.py", "scripts/v2/ci_db_diagnostics.py", "scripts/v2/ci_runtime_policy.py", "scripts/v2/ci_tf_assets.py", "scripts/v2/ci/prepare-runtime-host.mjs", "scripts/v2/ci/prepare-runtime-host.test.mjs", "scripts/v2/ci/pg8000-requirements.txt", "scripts/v2/test_ci_*.py"]
+    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_plan_context.py", "scripts/v2/ci_plan_inspect.py", "scripts/v2/ci_private_plan.py", "scripts/v2/ci_readiness_plan_summary.py", "scripts/v2/ci_failure_diagnostics.py", "scripts/v2/ci_dns_policy.py", "scripts/v2/ci_dev_domain.py", "scripts/v2/ci_privatelink_additions.py", "scripts/v2/ci_db_diagnostics.py", "scripts/v2/ci_runtime_policy.py", "scripts/v2/ci_tf_assets.py", "scripts/v2/ci/prepare-runtime-host.mjs", "scripts/v2/ci/prepare-runtime-host.test.mjs", "scripts/v2/ci/pg8000-requirements.txt", "scripts/v2/test_ci_*.py"]
   push:
     branches: [main, dev, atomoh, ssminji, whchoi]
     # The workflow file itself is in the path filter so a workflow change
     # self-tests with a real plan on the branch it lands on.
-    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_plan_inspect.py", "scripts/v2/ci_private_plan.py", "scripts/v2/ci_readiness_plan_summary.py", "scripts/v2/ci_failure_diagnostics.py", "scripts/v2/ci_dns_policy.py", "scripts/v2/ci_dev_domain.py", "scripts/v2/ci_db_diagnostics.py", "scripts/v2/ci_runtime_policy.py", "scripts/v2/ci_tf_assets.py", "scripts/v2/ci/prepare-runtime-host.mjs", "scripts/v2/ci/prepare-runtime-host.test.mjs", "scripts/v2/ci/pg8000-requirements.txt", "scripts/v2/test_ci_*.py"]
+    paths: ["terraform/foundation/**", ".github/workflows/terraform.yml", "scripts/v2/ci_plan_inspect.py", "scripts/v2/ci_private_plan.py", "scripts/v2/ci_readiness_plan_summary.py", "scripts/v2/ci_failure_diagnostics.py", "scripts/v2/ci_dns_policy.py", "scripts/v2/ci_dev_domain.py", "scripts/v2/ci_privatelink_additions.py", "scripts/v2/ci_db_diagnostics.py", "scripts/v2/ci_runtime_policy.py", "scripts/v2/ci_tf_assets.py", "scripts/v2/ci/prepare-runtime-host.mjs", "scripts/v2/ci/prepare-runtime-host.test.mjs", "scripts/v2/ci/pg8000-requirements.txt", "scripts/v2/test_ci_*.py"]
   workflow_dispatch:
     inputs:
       mode:
@@ -106,8 +106,8 @@ jobs:
       MAIN_TFVARS_B64: ${{ secrets.TF_TFVARS }}
       DEV_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL_DEV }}
       DEV_TFVARS_B64: ${{ secrets.TF_TFVARS_DEV }}
-      USER_BACKEND_B64: ${{ secrets[format('TF_BACKEND_HCL_PREVIEW_{0}', github.base_ref || github.ref_name)] }}
-      USER_TFVARS_B64: ${{ secrets[format('TF_TFVARS_PREVIEW_{0}', github.base_ref || github.ref_name)] }}
+      USER_BACKEND_B64: ${{ (github.base_ref || github.ref_name) == 'atomoh' && secrets.TF_BACKEND_HCL_PREVIEW_atomoh || (github.base_ref || github.ref_name) == 'ssminji' && secrets.TF_BACKEND_HCL_PREVIEW_ssminji || (github.base_ref || github.ref_name) == 'whchoi' && secrets.TF_BACKEND_HCL_PREVIEW_whchoi || '' }}
+      USER_TFVARS_B64: ${{ (github.base_ref || github.ref_name) == 'atomoh' && secrets.TF_TFVARS_PREVIEW_atomoh || (github.base_ref || github.ref_name) == 'ssminji' && secrets.TF_TFVARS_PREVIEW_ssminji || (github.base_ref || github.ref_name) == 'whchoi' && secrets.TF_TFVARS_PREVIEW_whchoi || '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -118,7 +118,7 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.15.7
+          terraform_version: 1.17.1
           terraform_wrapper: false
 
       - name: Restore backend.hcl / terraform.tfvars
@@ -170,6 +170,14 @@ jobs:
           aws sts get-caller-identity --region ap-northeast-2 --output json --no-cli-pager |
             python3 ../../scripts/v2/ci_runtime_policy.py verify-caller
 
+      - name: Remove stale additive PrivateLink configuration
+        if: steps.restore.outputs.skip != '1'
+        run: |
+          set -euo pipefail
+          tracked=$(git ls-files -- ci-privatelink.auto.tfvars.json)
+          [ -z "$tracked" ] || { echo "::error::PrivateLink CI override must not be tracked"; exit 1; }
+          rm -f ci-privatelink.auto.tfvars.json
+
       - name: Configure dev domain overrides
         id: domain
         if: steps.restore.outputs.skip != '1'
@@ -211,10 +219,34 @@ jobs:
           [ -z "$tracked" ] || { echo "::error::Runtime CI override must not be tracked"; exit 1; }
           python3 ../../scripts/v2/ci_runtime_policy.py overrides
 
+      - name: Configure additive development PrivateLink endpoints
+        if: steps.restore.outputs.skip != '1'
+        env:
+          CI_PRIVATELINK_ADDITIONS_DEV: ${{ env.TARGET == 'dev' && (inputs.plan_scope || 'full') == 'full' && secrets.CI_PRIVATELINK_ADDITIONS_DEV || '' }}
+          PLAN_SCOPE: ${{ inputs.plan_scope || 'full' }}
+        run: |
+          set -euo pipefail
+          if [ -n "$CI_PRIVATELINK_ADDITIONS_DEV" ]; then
+            terraform console -no-color <<<'jsonencode(var.privatelink_endpoints)' |
+              python3 ../../scripts/v2/ci_privatelink_additions.py
+          fi
+
+      - name: Ensure Node runtime libraries
+        if: github.event_name == 'workflow_dispatch' && steps.restore.outputs.skip != '1' && env.TARGET == 'dev' && vars.CI_READONLY_RUNTIME_DEV == 'true' && (inputs.plan_scope || 'full') == 'full'
+        # Node 26 linux-arm64 links libatomic.so.1, which the self-hosted runner image lacks.
+        run: |
+          has_libatomic() { { /sbin/ldconfig -p 2>/dev/null || ldconfig -p 2>/dev/null; } | grep -q 'libatomic\.so\.1'; }
+          if ! has_libatomic; then
+            # An install failure (no passwordless sudo, apt lock, mirror outage) falls through to
+            # the explicit check below instead of aborting with an opaque apt error.
+            { sudo -n apt-get update -qq \
+              && sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libatomic1; } || true
+          fi
+          has_libatomic || { echo "::error::libatomic.so.1 is unavailable on this runner"; exit 1; }
       - uses: actions/setup-node@v4
         if: github.event_name == 'workflow_dispatch' && steps.restore.outputs.skip != '1' && env.TARGET == 'dev' && vars.CI_READONLY_RUNTIME_DEV == 'true' && (inputs.plan_scope || 'full') == 'full'
         with:
-          node-version: 20
+          node-version: 26
 
       - name: Prepare private host verification credentials
         id: host_credentials
@@ -296,9 +328,11 @@ jobs:
           # is deliberately one shared credential across stacks; admin users are per-stack
           # and NOT created by CI (create_admin_user defaults to false).
           TF_VAR_demo_password: ${{ secrets.TF_VAR_DEMO_PASSWORD }}
+          TF_VAR_agent_external_id: ${{ env.TARGET == 'dev' && secrets.AGENT_EXTERNAL_ID_DEV || '' }}
           DISPATCH: ${{ github.event_name == 'workflow_dispatch' }}
           PLAN_SCOPE: ${{ inputs.plan_scope }}
           CI_ASSETS_READY: "true"
+          CI_TOPOLOGY_ENTITIES_ENABLED_DEV: ${{ env.TARGET == 'dev' && (inputs.plan_scope || 'full') == 'full' && vars.CI_TOPOLOGY_ENTITIES_ENABLED_DEV || '' }}
           CI_READINESS_ENABLED_DEV: ${{ env.TARGET == 'dev' && vars.CI_READINESS_ENABLED_DEV || '' }}
           # Retain failures only for explicit dispatches. The child Terraform process never receives this key.
           TF_PLAN_ENC_KEY: ${{ github.event_name == 'workflow_dispatch' && secrets.TF_PLAN_ENC_KEY || '' }}
@@ -331,6 +365,15 @@ jobs:
               [ "$TARGET" = "dev" ] || { echo "::error::CI_READINESS_ENABLED_DEV requires dev"; exit 1; }
               args+=("-var=ci_readiness_enabled=$CI_READINESS_ENABLED_DEV");;
             *) echo "::error::CI_READINESS_ENABLED_DEV must be true or false"; exit 1;;
+          esac
+          # Only full development plans can override this default-off pilot.
+          # Apply restores the reviewed saved plan and never re-reads the switch.
+          case "${CI_TOPOLOGY_ENTITIES_ENABLED_DEV:-}" in
+            "") ;;
+            true|false)
+              [ "$TARGET" = dev ] && [ "${PLAN_SCOPE:-full}" = full ] || { echo "::error::CI_TOPOLOGY_ENTITIES_ENABLED_DEV requires a full dev plan"; exit 1; }
+              args+=("-var=topology_entities_enabled=$CI_TOPOLOGY_ENTITIES_ENABLED_DEV");;
+            *) echo "::error::CI_TOPOLOGY_ENTITIES_ENABLED_DEV must be true or false"; exit 1;;
           esac
           # Append last so no restored or generated var-file can override the CI flag.
           case "${TF_VAR_ci_migrations_enabled:-false}" in
@@ -478,6 +521,8 @@ jobs:
           if [ -z "$tracked" ]; then rm -f ci-domain.auto.tfvars.json; fi
           tracked=$(git ls-files -- ci-runtime.auto.tfvars.json)
           if [ -z "$tracked" ]; then rm -f ci-runtime.auto.tfvars.json; fi
+          tracked=$(git ls-files -- ci-privatelink.auto.tfvars.json)
+          if [ -z "$tracked" ]; then rm -f ci-privatelink.auto.tfvars.json; fi
           [ -n "$(git ls-files -- .build)" ] || rm -rf .build
 
   publish:
@@ -647,8 +692,8 @@ jobs:
       MAIN_TFVARS_B64: ${{ secrets.TF_TFVARS }}
       DEV_BACKEND_B64: ${{ secrets.TF_BACKEND_HCL_DEV }}
       DEV_TFVARS_B64: ${{ secrets.TF_TFVARS_DEV }}
-      USER_BACKEND_B64: ${{ secrets[format('TF_BACKEND_HCL_PREVIEW_{0}', github.ref_name)] }}
-      USER_TFVARS_B64: ${{ secrets[format('TF_TFVARS_PREVIEW_{0}', github.ref_name)] }}
+      USER_BACKEND_B64: ${{ github.ref_name == 'atomoh' && secrets.TF_BACKEND_HCL_PREVIEW_atomoh || github.ref_name == 'ssminji' && secrets.TF_BACKEND_HCL_PREVIEW_ssminji || github.ref_name == 'whchoi' && secrets.TF_BACKEND_HCL_PREVIEW_whchoi || '' }}
+      USER_TFVARS_B64: ${{ github.ref_name == 'atomoh' && secrets.TF_TFVARS_PREVIEW_atomoh || github.ref_name == 'ssminji' && secrets.TF_TFVARS_PREVIEW_ssminji || github.ref_name == 'whchoi' && secrets.TF_TFVARS_PREVIEW_whchoi || '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -680,7 +725,7 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.15.7
+          terraform_version: 1.17.1
           terraform_wrapper: false
 
       - name: Select the branch's stack (fail-closed)
@@ -736,6 +781,13 @@ jobs:
             exit 1
           fi
 
+      - name: Remove stale additive PrivateLink configuration
+        run: |
+          set -euo pipefail
+          tracked=$(git ls-files -- ci-privatelink.auto.tfvars.json)
+          [ -z "$tracked" ] || { echo "::error::PrivateLink CI override must not be tracked"; exit 1; }
+          rm -f ci-privatelink.auto.tfvars.json
+
       - name: terraform init
         run: terraform init -backend-config=backend.hcl -input=false
 
@@ -765,10 +817,22 @@ jobs:
           terraform show -json tfplan |
             python3 -c 'import json,os,sys; p=json.load(sys.stdin); v=p["variables"]["ci_runtime_profile_enabled"]["value"]; assert type(v) is bool; print("required="+str(v and os.environ["TARGET"]=="dev" and os.environ["PLAN_SCOPE"]=="full").lower())' >> "$GITHUB_OUTPUT"
 
+      - name: Ensure Node runtime libraries
+        if: steps.approved_host.outputs.required == 'true'
+        # Node 26 linux-arm64 links libatomic.so.1, which the self-hosted runner image lacks.
+        run: |
+          has_libatomic() { { /sbin/ldconfig -p 2>/dev/null || ldconfig -p 2>/dev/null; } | grep -q 'libatomic\.so\.1'; }
+          if ! has_libatomic; then
+            # An install failure (no passwordless sudo, apt lock, mirror outage) falls through to
+            # the explicit check below instead of aborting with an opaque apt error.
+            { sudo -n apt-get update -qq \
+              && sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libatomic1; } || true
+          fi
+          has_libatomic || { echo "::error::libatomic.so.1 is unavailable on this runner"; exit 1; }
       - uses: actions/setup-node@v4
         if: steps.approved_host.outputs.required == 'true'
         with:
-          node-version: 20
+          node-version: 26
 
       - name: Prepare private apply host credentials
         id: apply_host_credentials
@@ -852,5 +916,7 @@ jobs:
         if: always()
         run: |
           rm -f tfplan tfplan.enc tfassets.tar.gz tfassets.enc terraform.tfvars backend.hcl
+          tracked=$(git ls-files -- ci-privatelink.auto.tfvars.json)
+          if [ -z "$tracked" ]; then rm -f ci-privatelink.auto.tfvars.json; fi
           [ -n "$(git ls-files -- .build)" ] || rm -rf .build
           rm -rf -- ../.private-plan-"$GITHUB_RUN_ID"-"$GITHUB_RUN_ATTEMPT"-*

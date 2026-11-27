@@ -15,7 +15,7 @@ import Screenshot from '@site/src/components/Screenshot';
 :::
 
 
-`/ai-diagnosis` ページは、Amazon Bedrock **Claude Opus 4.8** が 15 セクションで AWS インフラ全体を自動分析する総合レポートツールです。
+`/ai-diagnosis` ページは、Amazon Bedrock の Claude モデル（デフォルトは Sonnet クラス、Deep 段階は Opus クラスを選択可）が 15 セクションで AWS インフラ全体を自動分析する総合レポートツールです。
 
 <Screenshot src="/screenshots/monitoring/ai-diagnosis.png" alt="AI 総合診断ページ" />
 
@@ -23,7 +23,7 @@ import Screenshot from '@site/src/components/Screenshot';
 
 | 項目 | 値 |
 |------|---|
-| **モデル** | `global.anthropic.claude-opus-4-8`（固定） |
+| **モデル** | デフォルトは Claude Sonnet クラス、Deep 段階のみ Opus クラスを選択可（正確な ID：`scripts/v2/workers/diagnosis/report.py`） |
 | **セクション数** | 15（コスト 4 + インフラ 6 + セキュリティ/ネットワーク 2 + サマリー 3） |
 | **出力フォーマット** | DOCX (A4 + TOC)、Markdown、PDF（ブラウザ print） |
 | **保存場所** | S3 レポートバケット + `data/reports/*.json` キャッシュ |
@@ -128,7 +128,7 @@ import Screenshot from '@site/src/components/Screenshot';
 | **PDF** | `/ai-diagnosis/report` ページ + ブラウザ Print | ホワイト背景、A4 ページブレーク、別途 PDF ライブラリなし（bundle size 保護） |
 
 :::tip PDF ライブラリを追加しない理由
-ADR-019: 別途の PDF ライブラリ（Puppeteer など）は Next.js のバンドルサイズと EC2 メモリを大幅に増加させます。代わりに印刷用ページを作成し、ブラウザの Print-to-PDF を活用します — 成果物の品質は同等でありながら依存関係は 0 個です。
+別途の PDF ライブラリ（Puppeteer など）は Next.js のバンドルサイズと EC2 メモリを大幅に増加させます。代わりに印刷用ページを作成し、ブラウザの Print-to-PDF を活用します — 成果物の品質は同等でありながら依存関係は 0 個です。
 :::
 
 ## アラートパイプラインとの連携
@@ -179,8 +179,5 @@ curl -X POST /awsops/api/report \
 
 ## 参考
 
-- ADR-019: 診断レポートのフォーマットマトリクス
-- ADR-014: レポートのプロキシダウンロード URL
-- ADR-016: Bedrock モデル選択戦略（Opus 4.8 固定）
 - `src/lib/report-prompts.ts` — 15 セクションのプロンプト定義（正確な出力構造）
 - `src/lib/report-scheduler.ts` — スケジュール計算ロジック（KST 基準）

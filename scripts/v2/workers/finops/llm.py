@@ -9,6 +9,7 @@ import os
 import re
 
 import boto3
+import model_runtime
 from botocore.config import Config
 
 from redact import redact as _redact
@@ -21,10 +22,10 @@ from redact import redact as _redact
 # them run).
 _BEDROCK_CONFIG = Config(connect_timeout=5, read_timeout=15, retries={"max_attempts": 1})
 
-# A bare "global.anthropic.claude-haiku-4-5" throws ValidationException invoked from
-# ap-northeast-2 — every other caller in this repo (classifier.ts, assistant.ts, signal_catalog_gen.py,
-# workload.tf's CLASSIFIER_MODEL_ID/K8SGPT_NARRATION_MODEL) uses the fully-qualified dated id below.
-_MODEL_ID = os.environ.get("FINOPS_EXPLAIN_MODEL_ID", "global.anthropic.claude-haiku-4-5-20251001-v1:0")
+# Same Haiku profile as classifier.ts, assistant.ts, signal_catalog_gen.py and workload.tf's
+# CLASSIFIER_MODEL_ID/K8SGPT_NARRATION_MODEL. Unlike the old bare Haiku 4.5 id (ValidationException),
+# the bare 5.5 profile is ACTIVE and answered InvokeModel/Converse from ap-northeast-2 (2026-10-29).
+_MODEL_ID = os.environ.get("FINOPS_EXPLAIN_MODEL_ID", "global.anthropic.claude-haiku-5-5")
 _SYSTEM = (
     "너는 FinOps 설명 도우미다. 이미 확정된 절감 항목(제목/금액/근거)을 한국어 1~2문장으로 설명한다. "
     "새로운 숫자를 만들거나, 주어진 금액과 다른 금액을 언급하거나, 실행을 제안하지 마라. "
@@ -38,7 +39,7 @@ def _get_client():
     global _client
     if _client is None:
         region = os.environ.get("BEDROCK_REGION", "ap-northeast-2")
-        _client = boto3.client("bedrock-runtime", region_name=region, config=_BEDROCK_CONFIG)
+        _client = model_runtime.wrap(boto3.client("bedrock-runtime", region_name=region, config=_BEDROCK_CONFIG))
     return _client
 
 
@@ -102,6 +103,7 @@ def explain(title, category, monthly_savings_usd, evidence):
         body = {
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": 200,
+            **({"thinking": {"type": "disabled"}} if "claude-haiku-5" in _MODEL_ID else {}),
             "system": _SYSTEM,
             "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
         }

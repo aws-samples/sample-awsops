@@ -76,6 +76,30 @@ export function isDerivedTrendType(k: string): boolean {
   return Object.prototype.hasOwnProperty.call(DERIVED_TREND_TYPES, k);
 }
 
+/** Inventory types collected only as attachment evidence for topology (ENIs belong to already-
+ *  counted EC2/ELB/Lambda/endpoint/RDS resources, and Fargate tasks churn them): they keep their
+ *  own series and type page but never add to fleet totals or the net-change parity set. */
+export const FLEET_TOTAL_EXCLUDED_TYPES: ReadonlySet<string> = new Set(['eni']);
+
+/** Whether a type's count belongs in the fleet total (not derived, not attachment-only). */
+export function countsTowardFleetTotal(k: string): boolean {
+  return !isDerivedTrendType(k) && !FLEET_TOTAL_EXCLUDED_TYPES.has(k);
+}
+
+/** Resource-trend chart series and legend groups from the route's ranked type list.
+ *  The top 8 fleet-counted types are charted: Core = top 5 (visible by default), Other = the
+ *  next 3. Attachment-only types (ENIs) and derived security series are appended after them so
+ *  they stay reachable however many types the fleet has: ENIs join Other, derived series keep
+ *  their own group. Every charted series is in exactly one group; Other and derived default hidden. */
+export function trendLegendGroups(ranked: readonly string[]) {
+  const counted = ranked.filter(countsTowardFleetTotal);
+  const attachmentOnly = ranked.filter(t => FLEET_TOTAL_EXCLUDED_TYPES.has(t) && !isDerivedTrendType(t));
+  const derivedTrendTypes = ranked.filter(isDerivedTrendType);
+  const coreTypes = counted.slice(0, 5);
+  const otherTypes = [...counted.slice(5, 8), ...attachmentOnly];
+  return { trendTypes: [...coreTypes, ...otherTypes, ...derivedTrendTypes], coreTypes, otherTypes, derivedTrendTypes };
+}
+
 /** Derived security-count trend series (gap L129), written by the sync lambda's
  *  DERIVED_SNAPSHOTS (scripts/v2/steampipe/sync_lambda.py — LOCKSTEP: keys must match) from
  *  the /security predicates in security-findings.ts. Excluded from the trend `total` (the
@@ -156,7 +180,7 @@ export function netChange(
   // and including them in the sum double-counts (ebs_volume + unencrypted_ebs move together).
   const typeKeys = (p: TrendPointLike) =>
     Object.keys(p)
-      .filter((k) => k !== 'date' && k !== 'total' && !isDerivedTrendType(k) && typeof p[k] === 'number')
+      .filter((k) => k !== 'date' && k !== 'total' && countsTowardFleetTotal(k) && typeof p[k] === 'number')
       .sort();
   const lastKeys = typeKeys(last);
   const baseKeys = typeKeys(base);

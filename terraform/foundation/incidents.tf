@@ -1,5 +1,5 @@
 # terraform/foundation/incidents.tf
-# AWSops v2 ADR-032 — autonomous incident LIFECYCLE substrate.
+# AWSops v2 ADR-006[legacy 032] — autonomous incident LIFECYCLE substrate.
 # EVERY resource here is gated by var.incident_lifecycle_enabled (default false → count=0 → ZERO
 # AWS resources, ZERO cost, ZERO autonomous trigger). The always-present incident_* domain tables
 # (migration v5) are harmless when off — empty and inert. This EXTENDS the P2 backbone (workers.tf):
@@ -18,14 +18,14 @@
 # status_updater) ONLY — NO ecs:*, NO states:StartExecution (the dispatcher starts the SM), NO
 # mutating actions. The incident-Lambda role is least-privilege: Aurora secret + KMS + AgentCore
 # InvokeAgentRuntime + ssm:GetParameter on the incident/agentcore params + logs + VPC ENI ONLY.
-# Design refs: ADR-032 (Addenda #4 configurable windows, #5 least-priv, #6 isolation, #7 storm caps).
+# Design refs: ADR-006[legacy 032] (Addenda #4 configurable windows, #5 least-priv, #6 isolation, #7 storm caps).
 
 locals {
   il             = var.incident_lifecycle_enabled ? 1 : 0
-  rwb            = var.rca_writeback_enabled ? 1 : 0 # ADR-034 write-back gate (see writeback.tf)
+  rwb            = var.rca_writeback_enabled ? 1 : 0 # ADR-006[legacy 034] write-back gate (see writeback.tf)
   inc_src        = "${path.module}/../../scripts/v2/incident"
   workers_src_il = "${path.module}/../../scripts/v2/workers"     # reuse db.py + status_updater ARN
-  rem_src_il     = "${path.module}/../../scripts/v2/remediation" # ADR-034: writeback.py imports remediation_executor (+ action_catalog) — the 029/036 single-write surface
+  rem_src_il     = "${path.module}/../../scripts/v2/remediation" # ADR-006[legacy 034]: writeback.py imports remediation_executor (+ action_catalog) — the 029/036 single-write surface
   inc_acct       = data.aws_caller_identity.current.account_id
   # The AgentCore runtime ARN SSM param — created by ai.tf when agentcore_enabled, written by
   # provision.py after apply. Referenced by NAME (string), NOT the gated resource, so the incident
@@ -138,7 +138,7 @@ data "archive_file" "incident_src" {
     content  = file("${local.inc_src}/incident_watchdog.py")
     filename = "incident_watchdog.py"
   }
-  # ADR-034 write-back stage sources — added ONLY when rca_writeback_enabled, so the ADR-032 GREEN
+  # ADR-006[legacy 034] write-back stage sources — added ONLY when rca_writeback_enabled, so the ADR-006[legacy 032] GREEN
   # archive (lifecycle on, write-back off) stays byte-identical and the incident Lambdas are not
   # forced to re-package. writeback.py imports writeback_render + slack_thread (incident slice) and
   # remediation_executor + action_catalog (the 029/036 single-write surface) — db.py is already above.
@@ -250,8 +250,8 @@ resource "aws_iam_role_policy" "incident_lambda" {
   })
 }
 
-# ---- ADR-034 write-back add-on policy (SEPARATE resource, count=local.rwb) ----
-# Kept OUT of aws_iam_role_policy.incident_lambda so the ADR-032 GREEN incident-Lambda policy is
+# ---- ADR-006[legacy 034] write-back add-on policy (SEPARATE resource, count=local.rwb) ----
+# Kept OUT of aws_iam_role_policy.incident_lambda so the ADR-006[legacy 032] GREEN incident-Lambda policy is
 # byte-unchanged when write-back is off. Grants the incident-Lambda role exactly what writeback.py
 # needs: assume the two per-action write roles (#1 per-action role — the actual OpsItem/IM write is
 # done UNDER those assumed roles, NOT this role), read-only response-plan routing, and GetParameter on
@@ -306,8 +306,8 @@ resource "aws_iam_role_policy" "incident_sfn" {
   role  = aws_iam_role.incident_sfn[0].id
   policy = jsonencode({ Version = "2012-10-17", Statement = [
     { Sid = "InvokeIncidentLambdas", Effect = "Allow", Action = ["lambda:InvokeFunction"],
-      # ADR-034: the writeback Lambda ARN is appended ONLY when rca_writeback_enabled (concat with an
-      # empty list when off), so the OFF SM-role policy is byte-identical to the ADR-032 GREEN policy.
+      # ADR-006[legacy 034]: the writeback Lambda ARN is appended ONLY when rca_writeback_enabled (concat with an
+      # empty list when off), so the OFF SM-role policy is byte-identical to the ADR-006[legacy 032] GREEN policy.
       Resource = concat([
         aws_lambda_function.incident_triage[0].arn,
         aws_lambda_function.incident_lead[0].arn,
@@ -341,7 +341,7 @@ resource "aws_cloudwatch_log_group" "incident_sfn" {
 }
 
 ############################################################
-# Step 3 (cont.): the seven incident stage Lambdas (arm64, python3.12, pg8000 layer, VPC for Aurora).
+# Step 3 (cont.): the seven incident stage Lambdas (arm64, python3.14, pg8000 layer, VPC for Aurora).
 #   Each handler is "<mod>.lambda_handler". Env: Aurora connection (db.py) + PROJECT (the Lambdas
 #   derive the incident SSM paths from it) + the five SSM param names + the AgentCore runtime-ARN
 #   param (agent_bridge.py reads SSM_RUNTIME_ARN_PARAM). NO mutation surface in any of these.
@@ -365,8 +365,8 @@ locals {
     AGENTCORE_RUNTIME_ARN_PARAM = local.inc_runtime_arn_param
   } : {}
 
-  # ADR-034: the WriteBack stage Lambda env additions. Merged in ONLY when rca_writeback_enabled, so
-  # the ADR-032 GREEN env (write-back off) is byte-identical and the other stage Lambdas are unchanged.
+  # ADR-006[legacy 034]: the WriteBack stage Lambda env additions. Merged in ONLY when rca_writeback_enabled, so
+  # the ADR-006[legacy 032] GREEN env (write-back off) is byte-identical and the other stage Lambdas are unchanged.
   # writeback.py reads: the two per-action role ARNs it assumes (#1 per-action role), the OpsCenter
   # source + the response-plan routing map + the public base URL for the evidence link. Slack uses the
   # webhook-url param (resolved at runtime from /ops/<project>/writeback/slack/* — read-only, no env).
@@ -387,7 +387,7 @@ resource "aws_lambda_function" "incident_triage" {
   count            = local.il
   function_name    = "${var.project}-incident-triage"
   role             = aws_iam_role.incident_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "triage.lambda_handler"
   filename         = data.archive_file.incident_src[0].output_path
@@ -407,7 +407,7 @@ resource "aws_lambda_function" "incident_lead" {
   count            = local.il
   function_name    = "${var.project}-incident-lead"
   role             = aws_iam_role.incident_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "lead.lambda_handler"
   filename         = data.archive_file.incident_src[0].output_path
@@ -427,7 +427,7 @@ resource "aws_lambda_function" "incident_subagent" {
   count            = local.il
   function_name    = "${var.project}-incident-subagent"
   role             = aws_iam_role.incident_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "subagent.lambda_handler"
   filename         = data.archive_file.incident_src[0].output_path
@@ -447,7 +447,7 @@ resource "aws_lambda_function" "incident_rootcause" {
   count            = local.il
   function_name    = "${var.project}-incident-rootcause"
   role             = aws_iam_role.incident_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "rootcause.lambda_handler"
   filename         = data.archive_file.incident_src[0].output_path
@@ -467,7 +467,7 @@ resource "aws_lambda_function" "incident_mitigation_plan" {
   count            = local.il
   function_name    = "${var.project}-incident-mitigation-plan"
   role             = aws_iam_role.incident_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "mitigation_plan.lambda_handler"
   filename         = data.archive_file.incident_src[0].output_path
@@ -487,7 +487,7 @@ resource "aws_lambda_function" "incident_prevention" {
   count            = local.il
   function_name    = "${var.project}-incident-prevention"
   role             = aws_iam_role.incident_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "prevention.lambda_handler"
   filename         = data.archive_file.incident_src[0].output_path
@@ -507,7 +507,7 @@ resource "aws_lambda_function" "incident_stage_failed" {
   count            = local.il
   function_name    = "${var.project}-incident-stage-failed"
   role             = aws_iam_role.incident_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "incident_stage_failed.lambda_handler"
   filename         = data.archive_file.incident_src[0].output_path
@@ -523,7 +523,7 @@ resource "aws_lambda_function" "incident_stage_failed" {
   depends_on = [aws_cloudwatch_log_group.incident_lambdas, aws_iam_role_policy_attachment.incident_lambda_vpc]
 }
 
-# ADR-034 WriteBack stage Lambda — provisioned ONLY when rca_writeback_enabled (count=local.rwb). Same
+# ADR-006[legacy 034] WriteBack stage Lambda — provisioned ONLY when rca_writeback_enabled (count=local.rwb). Same
 # role/layer/vpc/env as the other stage Lambdas (its env adds the per-action role ARNs + routing config
 # via local.inc_env's rwb merge). Ships in the SAME incident_src archive (writeback.py + its imports are
 # added to data.archive_file.incident_src only when rwb). It performs the single BEST-EFFORT marked
@@ -532,7 +532,7 @@ resource "aws_lambda_function" "incident_writeback" {
   count            = local.rwb
   function_name    = "${var.project}-incident-writeback"
   role             = aws_iam_role.incident_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "writeback.lambda_handler"
   filename         = data.archive_file.incident_src[0].output_path
@@ -550,10 +550,10 @@ resource "aws_lambda_function" "incident_writeback" {
 
 ############################################################
 # Step 4: The incident SM (sibling STANDARD machine; T6 ASL) + the per-stage timeout watchdog.
-#   ADR-034 (write-back): the committed incident.asl.json is the OFF graph (NO WriteBack state). ASL is
+#   ADR-006[legacy 034] (write-back): the committed incident.asl.json is the OFF graph (NO WriteBack state). ASL is
 #   JSON (not conditional), so:
 #     * OFF (local.rwb==0): local.incident_def is the RAW templatefile render of the committed ASL —
-#       BYTE-IDENTICAL to the ADR-032 GREEN machine (no re-serialization, no whitespace/key reorder).
+#       BYTE-IDENTICAL to the ADR-006[legacy 032] GREEN machine (no re-serialization, no whitespace/key reorder).
 #       This guarantees zero plan diff vs the previously-shipped OFF graph.
 #     * ON  (local.rwb==1): jsondecode the same render, splice the WriteBack + WriteBackSkipped states
 #       in (repoint RootCause.Next -> WriteBack), and jsonencode. The WriteBack stage is BEST-EFFORT
@@ -629,7 +629,7 @@ resource "aws_lambda_function" "incident_watchdog" {
   count            = local.il
   function_name    = "${var.project}-incident-watchdog"
   role             = aws_iam_role.incident_lambda[0].arn
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "incident_watchdog.lambda_handler"
   filename         = data.archive_file.incident_src[0].output_path
@@ -669,7 +669,7 @@ resource "aws_lambda_permission" "incident_watchdog" {
 }
 
 ############################################################
-# Step 6: ADR-032 Phase 4 — cross-incident PROACTIVE-PREVENTION feedback loop (gated; rate(24h)).
+# Step 6: ADR-006[legacy 032] Phase 4 — cross-incident PROACTIVE-PREVENTION feedback loop (gated; rate(24h)).
 #   A periodic analyzer that reads recent incident/RCA history, detects RECURRING patterns
 #   (rca.category x primary service over a window, recurrence >= threshold), and UPSERTs one
 #   prevention_insight per recurring pattern (idempotent on dedup_key). RECOMMEND-ONLY: it emits
@@ -730,7 +730,7 @@ resource "aws_lambda_function" "prevention_loop" {
   count            = local.il
   function_name    = "${var.project}-prevention-loop"
   role             = aws_iam_role.incident_lambda[0].arn # reuse the incident-Lambda least-priv role
-  runtime          = "python3.12"
+  runtime          = "python3.14"
   architectures    = ["arm64"]
   handler          = "prevention_loop.lambda_handler"
   filename         = data.archive_file.prevention_loop[0].output_path

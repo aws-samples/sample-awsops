@@ -1,6 +1,7 @@
 'use client';
 import { Suspense, useEffect, useMemo, useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
+import PresentationDownloads from '@/components/diagnosis/PresentationDownloads';
 import ReportMarkdown, { normalizeHeadings } from '@/components/diagnosis/ReportMarkdown';
 import { splitSections } from '@/components/diagnosis/ReportSections';
 import { useI18n } from '@/components/shell/LanguageProvider';
@@ -105,7 +106,8 @@ function PrintReportInner() {
         }
       `}</style>
       <div className="mx-auto max-w-[210mm] px-10 py-8">
-        <div className="print-hidden mb-6 flex items-center justify-end gap-2">
+        <div className="print-hidden mb-6 flex flex-wrap items-center justify-end gap-2">
+          {hasBody && r.id === id && <PresentationDownloads key={r.id} report={{ ...r, markdown: state.markdown! }} />}
           <button onClick={() => window.print()} className="rounded-md bg-brand-500 px-3 py-1.5 text-[13px] font-medium text-white">{tt('인쇄')}</button>
           <button onClick={close} className="rounded-md border border-neutral-300 px-3 py-1.5 text-[13px] text-neutral-600">{tt('닫기')}</button>
         </div>

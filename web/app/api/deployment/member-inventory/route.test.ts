@@ -63,7 +63,7 @@ describe('GET /api/deployment/member-inventory', () => {
     expect(mocks.query).not.toHaveBeenCalled();
   });
 
-  it.each([
+  it.each<Record<string, string>>([
     { accountId: 'not-an-account' }, { type: 's3' }, { resourceId: '' },
     { resourceId: 'x'.repeat(2049) }, { resourceId: 'bad\nid' },
   ])('rejects malformed or unsupported input before querying', async (patch) => {

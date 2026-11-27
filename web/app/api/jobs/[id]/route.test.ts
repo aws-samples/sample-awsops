@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { NextRequest } from 'next/server';
 // pentest-remediation P0-1: this route previously had NO verifyUser() call at all — any UUID
 // returned the job's full result/artifact_uri/error to anyone. These tests lock in auth + ownership.
 const verifyUser = vi.fn();
@@ -14,7 +15,7 @@ vi.mock('@/lib/admin', () => ({ isAdmin: (...a: unknown[]) => isAdmin(...a) }));
 vi.mock('@/lib/db', () => ({ getPool: () => ({ query: (...a: unknown[]) => query(...a) }) }));
 
 const UUID = '11111111-1111-1111-1111-111111111111';
-const req = (cookie = 'awsops_token=t') => new Request(`http://x/api/jobs/${UUID}`, { headers: { cookie } });
+const req = (cookie = 'awsops_token=t') => new NextRequest(`http://x/api/jobs/${UUID}`, { headers: { cookie } });
 const ctx = { params: Promise.resolve({ id: UUID }) };
 
 beforeEach(() => {

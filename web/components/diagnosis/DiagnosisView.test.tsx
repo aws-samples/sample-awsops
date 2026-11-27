@@ -1,11 +1,15 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, cleanup, within, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, cleanup, within, fireEvent, waitFor } from '@testing-library/react';
 import DiagnosisView from './DiagnosisView';
 import { LanguageProvider } from '@/components/shell/LanguageProvider';
 
 afterEach(cleanup);
 afterEach(() => localStorage.removeItem('awsops-lang'));
+afterEach(() => {
+  localStorage.removeItem('awsops_diagnosis_sidebar_width');
+  localStorage.removeItem('awsops_diagnosis_sidebar_collapsed');
+});
 
 function mockCapture(reports: Array<Record<string, unknown>> = []) {
   const posts: any[] = [];
@@ -45,6 +49,138 @@ function mockList(reports: Array<Record<string, unknown>>) {
     return resp({}, 404);
   }));
 }
+
+describe('DiagnosisView six-pillar coverage', () => {
+  const keys = ['operational_excellence', 'security', 'reliability',
+    'performance_efficiency', 'cost_optimization', 'sustainability'];
+  const names = ['운영 우수성', '보안', '신뢰성', '성능 효율성', '비용 최적화', '지속 가능성'];
+
+  function show(summary: Record<string, unknown>) {
+    const report = { id: 11, tier: 'deep', status: 'partial',
+      created_at: '2026-11-16T07:21:00Z', summary };
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url === '/api/diagnosis') return resp({ reports: [report] });
+      if (url === '/api/diagnosis/11') return resp({ report,
+        markdown: '## Executive Summary\n\n검증된 진단 없음; 커버리지는 미확인입니다.' });
+      return resp({}, 404);
+    }));
+    render(<DiagnosisView />);
+  }
+
+  it('shows all six failed pillars instead of presenting a blank partial report as analysis', async () => {
+    show({ evidence_loop: { enabled: true }, pillar_coverage: Object.fromEntries(
+      keys.map((key) => [key, { status: 'failed', findings: 0, rejected: 0 }])) });
+    const panel = await screen.findByRole('region', { name: '6-pillar 분석' });
+    for (const name of names) expect(within(panel).getByText(name)).toBeTruthy();
+    expect(within(panel).getAllByText('분석 실패')).toHaveLength(6);
+    expect(within(panel).getByRole('alert').textContent).toContain('모든 pillar 분석이 실패했습니다');
+    expect(within(panel).queryByText('후보 생성 완료')).toBeNull();
+  });
+
+  it('keeps missing and malformed pillar coverage unknown and separates withheld findings', async () => {
+    show({ evidence_loop: { enabled: true }, pillar_coverage: {
+      security: { status: 'completed', findings: 2, rejected: 0 },
+      reliability: { status: 'partial', findings: 1, rejected: 2, downgraded: 3 },
+      sustainability: { status: 'completed', findings: -1, rejected: 0 },
+    } });
+    const panel = await screen.findByRole('region', { name: '6-pillar 분석' });
+    expect(within(panel).getAllByText('기록 없음')).toHaveLength(4);
+    expect(within(panel).getAllByText('후보 생성 완료')).toHaveLength(1);
+    expect(within(panel).getAllByText('일부 후보 생성')).toHaveLength(1);
+    expect(within(panel).getByText('검토 전 후보 2')).toBeTruthy();
+    expect(within(panel).getByText('근거 검증 제외 2')).toBeTruthy();
+    expect(within(panel).getByText('가설로 조정 3')).toBeTruthy();
+    expect(within(panel).queryByRole('alert')).toBeNull();
+  });
+
+  it('does not infer six completed pillars from a legacy successful artifact', async () => {
+    show({});
+    const panel = await screen.findByRole('region', { name: '6-pillar 분석' });
+    expect(within(panel).getAllByText('기록 없음')).toHaveLength(6);
+    expect(within(panel).queryByText('후보 생성 완료')).toBeNull();
+  });
+
+  it('labels specialist admissions as pre-review candidates when the reviewer withholds them all', async () => {
+    show({ evidence_loop: { enabled: true }, pillar_coverage: {
+      security: { status: 'completed', findings: 2, rejected: 0 },
+    }, rejected_findings: [
+      { id: 'sec:first', reason: 'review_withheld' },
+      { id: 'sec:second', reason: 'review_withheld' },
+    ] });
+    const panel = await screen.findByRole('region', { name: '6-pillar 분석' });
+    expect(within(panel).getByText('검토 전 후보 2')).toBeTruthy();
+    expect(within(panel).getByText('후보 생성 완료')).toBeTruthy();
+    expect(within(panel).getByText('후보는 종합 검토에서 제외될 수 있습니다. 최종 반영 여부는 아래 보고서에서 확인하세요.')).toBeTruthy();
+    expect(within(panel).queryByText('발견 항목 2')).toBeNull();
+    expect(within(panel).queryByText('분석 완료')).toBeNull();
+    expect(screen.getByText('검증된 진단 없음; 커버리지는 미확인입니다.')).toBeTruthy();
+  });
+});
+
+describe('DiagnosisView sidebar layout', () => {
+  it('starts a newly completed report at the top while polling a running report preserves its position', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let finished = false;
+      const row = () => ({ id: 7, tier: 'mid', status: finished ? 'succeeded' : 'running',
+        created_at: '2026-11-11T00:00:00Z', progress: { current: 1, total: 3, section: 'Compute' } });
+      vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+        if (url === '/api/diagnosis') return resp({ reports: [row()] });
+        if (url === '/api/diagnosis/7') return resp({ report: row(), markdown: finished ? '# newly completed' : null });
+        return resp({}, 404);
+      }));
+      render(<DiagnosisView />);
+      await screen.findByRole('progressbar');
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      const report = screen.getByRole('region', { name: '진단 리포트' });
+      report.scrollTop = 420;
+      await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+      expect(report.scrollTop).toBe(420);
+      finished = true;
+      await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+      await screen.findByRole('heading', { name: 'newly completed' });
+      expect(report.scrollTop).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps same-report dedup feedback outside the scrolled report without losing the reading position', async () => {
+    const row = { id: 7, tier: 'mid', status: 'succeeded', created_at: '2026-11-11T00:00:00Z' };
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === '/api/diagnosis' && init?.method === 'POST') return resp({ deduped: true, report_id: 7 });
+      if (url === '/api/diagnosis') return resp({ reports: [row] });
+      if (url === '/api/diagnosis/7') return resp({ report: row, markdown: '# existing report' });
+      return resp({}, 404);
+    }));
+    render(<DiagnosisView />);
+    await screen.findByRole('heading', { name: 'existing report' });
+    const report = screen.getByRole('region', { name: '진단 리포트' });
+    report.scrollTop = 420;
+    fireEvent.click(screen.getByRole('button', { name: '진단 실행' }));
+    const notice = await screen.findByText(/최근 1시간 내 동일 조건 리포트를 표시합니다/);
+    expect(notice.closest('[data-report-scroll]')).toBeNull();
+    expect(notice.getAttribute('role')).toBe('status');
+    expect(report.scrollTop).toBe(420);
+    expect(screen.getByRole('heading', { name: 'existing report' })).toBeTruthy();
+  });
+
+  it('resizes the sidebar and preserves diagnosis settings while collapsed', async () => {
+    mockList([]);
+    render(<DiagnosisView />);
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/diagnosis'));
+    const tier = screen.getByRole('combobox', { name: '진단 티어' }) as HTMLSelectElement;
+    fireEvent.change(tier, { target: { value: 'deep' } });
+    const handle = screen.getByRole('separator', { name: '진단 사이드바 너비 조절' });
+    fireEvent.keyDown(handle, { key: 'Home' });
+    expect(handle.getAttribute('aria-valuenow')).toBe('192');
+    fireEvent.click(screen.getAllByRole('button', { name: '진단 사이드바 닫기' })[0]);
+    expect(localStorage.getItem('awsops_diagnosis_sidebar_collapsed')).toBe('1');
+    fireEvent.click(screen.getAllByRole('button', { name: '진단 사이드바 열기' })[0]);
+    expect(tier.value).toBe('deep');
+    expect(screen.getByRole('separator').getAttribute('aria-valuenow')).toBe('192');
+  });
+});
 
 describe('DiagnosisView — live progress & never-stuck UI (A6)', () => {
   it('shows live per-section progress for a running report (not a bare spinner)', async () => {
@@ -316,6 +452,18 @@ describe('DiagnosisView — title / tags / soft delete', () => {
     fireEvent.change(tagInput, { target: { value: '보안' } });
     fireEvent.keyDown(tagInput, { key: 'Enter' });
     await waitFor(() => expect(calls.some((c) => c.method === 'PATCH' && Array.isArray(c.body.tags) && c.body.tags.includes('보안'))).toBe(true));
+  });
+
+  it('owner: Enter confirming an IME composition does not add a tag', async () => {
+    const calls: any[] = [];
+    mockMeta([{ id: 3, tier: 'mid', status: 'succeeded', created_at: 't', title: 'old', tags: [], can_edit: true, progress: {} }], calls);
+    render(<DiagnosisView />);
+    await screen.findByRole('button', { name: /제목 수정/ });
+    const tagInput = screen.getByLabelText('태그 추가');
+    fireEvent.change(tagInput, { target: { value: '보안' } });
+    fireEvent.keyDown(tagInput, { key: 'Enter', isComposing: true });
+    expect(calls.some((c) => c.method === 'PATCH')).toBe(false);
+    expect((tagInput as HTMLInputElement).value).toBe('보안');
   });
 
   it('non-owner: no edit/delete controls', async () => {

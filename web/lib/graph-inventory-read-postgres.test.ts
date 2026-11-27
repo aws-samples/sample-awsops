@@ -58,6 +58,19 @@ describe.skipIf(!socket)('bounded inventory reads on disposable PostgreSQL17', (
     await pool.query("INSERT INTO inventory_snapshots(account_id,resource_type,resource_count,captured_at) VALUES ('self','vpc',$1,$2)", [selfCount, point]);
     return point;
   }
+  it('validates generation pins inside both repeatable-read read-only inventory transactions', async () => {
+    await seed();
+    const observations: string[] = [];
+    await inventorySnapshot(pool, 'infra', 'self', ['vpc'], undefined, [], async client => {
+      const result = await client.query("SELECT current_setting('transaction_isolation') AS isolation, current_setting('transaction_read_only') AS mode");
+      observations.push(result.rows[0].isolation + '/' + result.rows[0].mode);
+    });
+    expect(observations).toEqual(['repeatable read/on', 'repeatable read/on']);
+    await expect(inventorySnapshot(pool, 'infra', 'self', ['vpc'], new Map(), [], async () => {
+      throw new Error('service_input_changed');
+    })).rejects.toThrow('service_input_changed');
+  });
+
   it('returns affirmative self-empty evidence only with reconciled succeeded counts', async () => {
     await seed();
     const snapshot = await inventorySnapshot(pool, 'infra', 'self', ['vpc']);
@@ -132,7 +145,7 @@ describe.skipIf(!socket)('bounded inventory reads on disposable PostgreSQL17', (
     for (const [type, id, data] of rows) await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,region,data,captured_at)
       VALUES ($1,$2,'fixture',$3::jsonb,$4)`, [type, id, JSON.stringify(data), at()]);
     const snapshot = await inventorySnapshot(pool, 'flow', 'self', [...new Set(rows.map(row => row[0]))]);
-    const items = (type: string) => snapshot.rows.filter(row => row.resource_type === type).map(row => ({ ...row.data, resource_id: row.resource_id }));
+    const items = (type: string) => snapshot.rows.filter(row => row.resource_type === type).map(row => ({ ...(row.data as object), resource_id: row.resource_id }));
     const graph = buildFlowGraph({ alb: items('alb'), tg: items('target_group'), alb_listener_rule: items('alb_listener_rule'),
       apigatewayv2_api: items('apigatewayv2_api'), apigatewayv2_integration: items('apigatewayv2_integration'), apigatewayv2_route: items('apigatewayv2_route') });
     expect(graph.edges.find(edge => edge.source === 'alb:arn:lb' && edge.target === 'tg:tg')?.label).toMatch(/default :8443/);
@@ -149,9 +162,9 @@ describe.skipIf(!socket)('bounded inventory reads on disposable PostgreSQL17', (
     const row = snapshot.rows[0];
     expect((row.data as { target_health_descriptions: unknown[] }).target_health_descriptions).toHaveLength(400);
     expect(JSON.stringify(row.data)).not.toContain('Description');
-    const graph = buildFlowGraph({ ownershipRead: { configurationOnly: true }, tg: [{ ...row.data, resource_id: row.resource_id, region: 'fixture' }] });
+    const graph = buildFlowGraph({ ownershipRead: { configurationOnly: true }, tg: [{ ...(row.data as object), resource_id: row.resource_id, region: 'fixture' }] });
     expect(graph.nodes.find(node => node.kind === 'target')?.meta).toMatchObject({ count: 400, health: 'unhealthy' });
-    expect(Object.values(graph.targetMembers)[0]).toHaveLength(400);
+    expect(Object.values(graph.targetMembers!)[0]).toHaveLength(400);
   });
   it('does not charge a withheld row against later rows and localizes the incomplete source', async () => {
     await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,region,data,captured_at) VALUES
@@ -177,6 +190,47 @@ describe.skipIf(!socket)('bounded inventory reads on disposable PostgreSQL17', (
     expect(bounded.truncated).toBe(true);
     expect(inventoryAttempt(bounded, ['vpc'], 'infra', 'self', at()).publish).toBe(false);
   });
+  it('cuts enrichment rows before core rows at the row cap and withholds only the enrichment type', async () => {
+    const point = at();
+    for (const [type, count] of [['vpc', 10], ['eni', 8190]] as const) {
+      await pool.query(`INSERT INTO inventory_sync_runs(resource_type,status,started_at,finished_at,last_success_at,row_count,unknown_attribute_count)
+        VALUES ($1,'succeeded',$2,$2,$2,$3,0)`, [type, point, count]);
+      await pool.query("INSERT INTO inventory_snapshots(account_id,resource_type,resource_count,captured_at) VALUES ('self',$1,$2,$3)", [type, count, point]);
+    }
+    // 'eni' sorts before 'vpc' alphabetically; enrichment ordering must still keep every vpc row.
+    await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,region,data,captured_at)
+      SELECT 'eni','eni-'||n,'fixture','{}',$1 FROM generate_series(1,8190)n`, [point]);
+    await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,region,data,captured_at)
+      SELECT 'vpc','vpc-'||n,'fixture','{}',$1 FROM generate_series(1,10)n`, [point]);
+    const snapshot = await inventorySnapshot(pool, 'flow', 'self', ['eni', 'vpc'], undefined, ['eni']);
+    expect(snapshot.truncated).toBe(true);
+    expect(snapshot.rows.filter(row => row.resource_type === 'vpc')).toHaveLength(10);
+    expect(snapshot.truncatedTypes).toEqual(['eni']);
+    expect(inventoryAttempt(snapshot, ['eni', 'vpc'], 'flow', 'self', at(), new Set(['eni'])))
+      .toMatchObject({ publish: true, status: 'ok', withheldTypes: ['eni'] });
+    // Without the enrichment designation the same cut still blocks publication.
+    const strict = await inventorySnapshot(pool, 'flow', 'self', ['eni', 'vpc']);
+    expect(inventoryAttempt(strict, ['eni', 'vpc'], 'flow', 'self', at()).publish).toBe(false);
+  });
+  it.each([[8200, 0], [180, 60000]])('preserves ENI ownership and API routes ahead of %i listener rules', async (count, bytes) => {
+    const types = ['vpc', 'eni', 'apigatewayv2_route', 'alb_listener_rule'];
+    const point = at();
+    for (const type of types) {
+      const quantity = type === 'alb_listener_rule' ? count : 1;
+      await pool.query(`INSERT INTO inventory_sync_runs(resource_type,status,started_at,finished_at,last_success_at,row_count,unknown_attribute_count)
+        VALUES ($1,'succeeded',$2,$2,$2,$3,0)`, [type, point, quantity]);
+      await pool.query("INSERT INTO inventory_snapshots(account_id,resource_type,resource_count,captured_at) VALUES ('self',$1,$2,$3)", [type, quantity, point]);
+      await pool.query(`INSERT INTO inventory_resources(resource_type,resource_id,region,data,captured_at)
+        SELECT $1, 'item-'||n, 'fixture', jsonb_build_object('name', repeat('x', $4)), $2
+        FROM generate_series(1,$3::int)n`, [type, point, quantity, type === 'alb_listener_rule' ? bytes : 0]);
+    }
+    const enrichment = types.slice(1);
+    const input = await inventorySnapshot(pool, 'flow', 'self', types, undefined, enrichment);
+    expect(input.truncatedTypes).toEqual(['alb_listener_rule']);
+    expect(inventoryAttempt(input, types, 'flow', 'self', point, new Set(enrichment)))
+      .toMatchObject({ publish: true, status: 'ok', withheldTypes: ['alb_listener_rule'] });
+  });
+
   it('keeps flow detail fields consumed from meta.row', async () => {
     const detail = { subnet_id: 'subnet-fixture', subnets: ['subnet-fixture'], availability_zones: ['zone-fixture'],
       security_group_ids: ['sg-fixture'], vpc_security_group_ids: ['sg-fixture'], group_name: 'group-fixture', title: 'fixture-title' };
@@ -184,8 +238,8 @@ describe.skipIf(!socket)('bounded inventory reads on disposable PostgreSQL17', (
       VALUES ('target_group','tg','fixture',$1::jsonb,$2)`, [JSON.stringify({ ...detail, target_type: 'ip' }), at()]);
     const snapshot = await inventorySnapshot(pool, 'flow', 'self', ['target_group']);
     const row = snapshot.rows[0];
-    const graph = buildFlowGraph({ tg: [{ ...row.data, resource_id: row.resource_id }] });
-    expect(graph.nodes.find(node => node.kind === 'tg')?.meta.row).toMatchObject(detail);
+    const graph = buildFlowGraph({ tg: [{ ...(row.data as object), resource_id: row.resource_id }] });
+    expect(graph.nodes.find(node => node.kind === 'tg')?.meta?.row).toMatchObject(detail);
   });
   it.each(['running','partial'])('a member %s sync reports collection incompleteness before coverage uncertainty', async status => {
     const point = await seed();

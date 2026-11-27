@@ -81,8 +81,42 @@ def _sql_literal_is_intact(raw_src, table):
     return m.group(1) is not None or "ARRAY[" not in _view_columns(table)
 
 
+# The CURRENT owner of sql_reader.inventory_resources: it recreates the baseline view with the ec2
+# power-state keys added. The baseline migration is frozen, so a key added later lives here.
+POWER_STATE_MIGRATION_GLOB = os.path.join(
+    os.path.dirname(__file__), "..", "..", "terraform", "foundation", "migrations",
+    "*_inventory_ec2_power_state.sql")
+
+
+def _current_inventory_keys():
+    matches = glob(POWER_STATE_MIGRATION_GLOB)
+    assert len(matches) == 1, "expected one inventory_ec2_power_state migration"
+    src = open(matches[0], encoding="utf-8").read()
+    m = re.search(r"k = ANY\(ARRAY\[(.*?)\]\)", src, re.S)
+    assert m, "power-state migration lost its allowlist"
+    return set(re.findall(r"'([^']+)'", m.group(1)))
+
+
+def _current_inventory_columns():
+    """The SELECT list of the CURRENT owner of sql_reader.inventory_resources (power-state migration)."""
+    matches = glob(POWER_STATE_MIGRATION_GLOB)
+    assert len(matches) == 1, "expected one inventory_ec2_power_state migration"
+    src = open(matches[0], encoding="utf-8").read()
+    m = re.search(r"CREATE\s+VIEW\s+sql_reader\.inventory_resources.*?AS\s+SELECT\s+(.*?)\s+FROM\s+public\.inventory_resources",
+                  src, re.I | re.S)
+    assert m, "power-state migration must recreate the inventory_resources view"
+    return m.group(1)
+
+
+def _inventory_view_definitions():
+    """Both the frozen baseline and its current owner: the leak guards must hold for each."""
+    return {"baseline": _view_columns("inventory_resources"), "current": _current_inventory_columns()}
+
+
 def _allowlisted_keys(table):
     """Keys named in the view's jsonb_object_agg ... k = ANY(ARRAY[...]) projection."""
+    if table == "inventory_resources":
+        return _current_inventory_keys()
     cols = _view_columns(table)
     m = re.search(r"k = ANY\(ARRAY\[(.*?)\]\)", cols, re.S)
     if not m:
@@ -116,6 +150,10 @@ class TestInventoryViewContract(unittest.TestCase):
             bare = re.sub(r"\(SELECT.*?AS\s+" + col, "", cols, flags=re.S)
             self.assertNotRegex(bare, r"(^|[,\s'])" + col + r"($|[,\s'])",
                                 f"{table}.{col} appears to be selected raw — INVARIANT rule 5")
+        # The current owner of inventory_resources must hold the same invariant.
+        bare = re.sub(r"\(SELECT.*?AS\s+data", "", _current_inventory_columns(), flags=re.S | re.I)
+        self.assertNotRegex(bare, r"(^|[,\s'])data($|[,\s'])",
+                            "current inventory_resources view selects data raw — INVARIANT rule 5")
 
     def test_the_views_still_carry_the_columns_the_connector_selects(self):
         # The outage was a missing column, so assert presence explicitly rather than inferring it.
@@ -126,6 +164,9 @@ class TestInventoryViewContract(unittest.TestCase):
             cols = _view_columns(table)
             for c in needed:
                 self.assertIn(c, cols, f"{table} view lost {c!r}, which inventory_read_mcp selects")
+        current = _current_inventory_columns()
+        for c in ("resource_type", "account_id", "region", "resource_id", "captured_at", "data"):
+            self.assertIn(c, current, f"current inventory_resources view lost {c!r}")
 
     def test_inventory_sync_runs_view_exposes_durable_freshness_without_error_text(self):
         matches = glob(FRESHNESS_MIGRATION_GLOB)
@@ -204,14 +245,14 @@ class TestInventoryViewContract(unittest.TestCase):
         CustomHeaders[].HeaderValue — the origin secret. The column-list SQL builds each origins[]
         element with a per-key CASE, not a blanket pass-through; assert that shape rather than a key
         name, since "origins is absent" is no longer the invariant this migration holds."""
-        cols = _view_columns("inventory_resources")
         self.assertIn("origins", _allowlisted_keys("inventory_resources"))
-        self.assertNotIn("CustomHeaders", cols)
-        self.assertNotIn("custom_headers", cols.lower().replace("customheaders", ""))
-        # The transform must be a per-element rebuild keyed to exactly one field, not a pass-through
-        # of the raw array (which is what would let CustomHeaders back in).
-        self.assertRegex(cols, r"jsonb_build_object\('DomainName'")
-        self.assertRegex(cols, r"CASE WHEN k = 'origins'")
+        for owner, cols in _inventory_view_definitions().items():
+            self.assertNotIn("CustomHeaders", cols, owner)
+            self.assertNotIn("custom_headers", cols.lower().replace("customheaders", ""), owner)
+            # The transform must be a per-element rebuild keyed to exactly one field, not a
+            # pass-through of the raw array (which is what would let CustomHeaders back in).
+            self.assertRegex(cols, r"jsonb_build_object\('DomainName'", owner)
+            self.assertRegex(cols, r"(?i)CASE WHEN k = 'origins'", owner)
 
     def test_inventory_read_mcp_projections_keeps_origins_on_the_cloudfront_list(self):
         # The connector-side allowlist must ask for the key the view now safely exposes — otherwise
@@ -242,6 +283,17 @@ class TestInventoryViewContract(unittest.TestCase):
                     body, r"END\s*;?\s*$",
                     "a DO $$ … $$ block does not end at its own END — a bare $$ inside it closed "
                     "it early; use a tagged quote like $cols$")
+
+    def test_power_state_view_widens_only_the_named_ec2_keys(self):
+        baseline = set(re.findall(r"'([^']+)'", re.search(
+            r"k = ANY\(ARRAY\[(.*?)\]\)", _view_columns("inventory_resources"), re.S).group(1)))
+        added = _current_inventory_keys() - baseline
+        self.assertEqual(added, {"instance_id", "instance_type", "instance_state", "state_transition_time"})
+        self.assertFalse(baseline - _current_inventory_keys(), "the recreated view dropped a named key")
+        src = open(glob(POWER_STATE_MIGRATION_GLOB)[0], encoding="utf-8").read()
+        self.assertIn("security_invoker = false", src)
+        self.assertIn("GRANT SELECT ON sql_reader.inventory_resources TO awsops_sql_reader", src)
+        self.assertFalse(_current_inventory_keys() & {"user_data", "tags", "public_ip_address", "iam_instance_profile_arn"})
 
 
 if __name__ == "__main__":

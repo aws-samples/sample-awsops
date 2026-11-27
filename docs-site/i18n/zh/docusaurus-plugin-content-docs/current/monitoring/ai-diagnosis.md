@@ -15,7 +15,7 @@ import Screenshot from '@site/src/components/Screenshot';
 :::
 
 
-`/ai-diagnosis` 页面是由 Amazon Bedrock **Claude Opus 4.8** 按 15 个分区对整个 AWS 基础设施进行自动分析的综合报告工具。
+`/ai-diagnosis` 页面是由 Amazon Bedrock Claude 模型（默认 Sonnet 级，Deep 阶段可选 Opus 级）按 15 个分区对整个 AWS 基础设施进行自动分析的综合报告工具。
 
 <Screenshot src="/screenshots/monitoring/ai-diagnosis.png" alt="AI 综合诊断页面" />
 
@@ -23,7 +23,7 @@ import Screenshot from '@site/src/components/Screenshot';
 
 | 项目 | 值 |
 |------|---|
-| **模型** | `global.anthropic.claude-opus-4-8`（固定） |
+| **模型** | 默认 Claude Sonnet 级，仅 Deep 阶段可选 Opus 级（确切 ID：`scripts/v2/workers/diagnosis/report.py`） |
 | **分区数** | 15（成本 4 + 基础设施 6 + 安全/网络 2 + 摘要 3） |
 | **输出格式** | DOCX (A4 + TOC)、Markdown、PDF（浏览器 print） |
 | **存储位置** | S3 报告存储桶 + `data/reports/*.json` 缓存 |
@@ -128,7 +128,7 @@ import Screenshot from '@site/src/components/Screenshot';
 | **PDF** | `/ai-diagnosis/report` 页面 + 浏览器 Print | 白色背景、A4 分页、无额外 PDF 库（保护 bundle size） |
 
 :::tip 为什么不添加 PDF 库
-ADR-019：额外的 PDF 库（Puppeteer 等）会显著增大 Next.js 打包体积和 EC2 内存占用。取而代之的是构建打印专用页面并利用浏览器的 Print-to-PDF — 产出质量相当而依赖为 0。
+额外的 PDF 库（Puppeteer 等）会显著增大 Next.js 打包体积和 EC2 内存占用。取而代之的是构建打印专用页面并利用浏览器的 Print-to-PDF — 产出质量相当而依赖为 0。
 :::
 
 ## 与告警管道的联动
@@ -179,8 +179,5 @@ curl -X POST /awsops/api/report \
 
 ## 参考
 
-- ADR-019: 诊断报告格式矩阵
-- ADR-014: 报告代理下载 URL
-- ADR-016: Bedrock 模型选择策略（固定 Opus 4.8）
 - `src/lib/report-prompts.ts` — 15 分区提示词定义（精确的输出结构）
 - `src/lib/report-scheduler.ts` — 调度计算逻辑（以 KST 为准）

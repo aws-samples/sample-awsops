@@ -5,6 +5,7 @@ and get_role_arn built arn:aws:iam::<host>:role/AWSopsReadOnlyRole and tried to
 AssumeRole it — but that role exists only in onboarded *target* accounts, so STS
 returned AccessDenied. Same-account access must use the Lambda's own role.
 """
+import datetime
 import os
 import sys
 
@@ -137,6 +138,36 @@ def test_get_credentials_other_builds_credentials(monkeypatch):
     assert c.token == "tok"
 
 
+def _capture_assume(monkeypatch):
+    seen = {}
+
+    class _Sts:
+        def assume_role(self, **params):
+            seen.update(params)
+            return {"Credentials": {
+                "AccessKeyId": "k", "SecretAccessKey": "s", "SessionToken": "t",
+                "Expiration": datetime.datetime(2030, 1, 1, tzinfo=datetime.timezone.utc),
+            }}
+
+    monkeypatch.setattr(ca.boto3, "client", lambda *a, **k: _Sts())
+    monkeypatch.setattr(ca, "_credential_cache", {})
+    return seen
+
+
+def test_assume_role_sends_configured_external_id(monkeypatch):
+    seen = _capture_assume(monkeypatch)
+    monkeypatch.setattr(ca, "_EXTERNAL_ID", "fixture-external-id")
+    ca._assume_role("arn:aws:iam::222222222222:role/AWSopsReadOnlyRole")
+    assert seen["ExternalId"] == "fixture-external-id"
+
+
+def test_assume_role_omits_external_id_when_unset(monkeypatch):
+    seen = _capture_assume(monkeypatch)
+    monkeypatch.setattr(ca, "_EXTERNAL_ID", "")
+    ca._assume_role("arn:aws:iam::222222222222:role/AWSopsReadOnlyRole")
+    assert "ExternalId" not in seen
+
+
 # ---- resolve_tool_name (AgentCore Gateway passes the tool via client_context, not event) ----
 class _FakeContext:
     def __init__(self, custom=None):
@@ -181,3 +212,24 @@ def test_resolve_tool_name_context_without_client_context_attr():
 def test_resolve_tool_name_client_context_without_custom():
     ctx = _FakeContext(custom=None)
     assert ca.resolve_tool_name({}, ctx) == ""
+
+
+def test_cap_list_reports_returned_total_and_truncation():
+    kept, meta = ca.cap_list(range(25), 20)
+    assert kept == list(range(20))
+    assert meta == {"returned": 20, "total": 25, "truncated": True}
+
+
+def test_cap_list_under_limit_is_not_truncated():
+    kept, meta = ca.cap_list(["a"], 20)
+    assert kept == ["a"]
+    assert meta == {"returned": 1, "total": 1, "truncated": False}
+
+
+def test_cap_list_api_pagination_marks_total_as_lower_bound():
+    _, meta = ca.cap_list(["a", "b"], 20, more_pages=True)
+    assert meta == {"returned": 2, "total": 2, "truncated": True, "more_pages": True}
+
+
+def test_cap_list_tolerates_none():
+    assert ca.cap_list(None, 5) == ([], {"returned": 0, "total": 0, "truncated": False})

@@ -1,13 +1,42 @@
 import { createHash } from 'node:crypto';
 import type { TraceIdentity, TraceSpan, ServiceGraphCall } from './trace-source';
 import { queueClaimMeta, queueDestinationArn } from './trace-evidence';
+import { DB_ENDPOINT_KINDS } from './infra-topology';
+import { modelClaim, reportingRuntime, runtimeClaim } from './inference-evidence';
 
 export interface TraceNode { id: string; kind: string; label: string; meta: Record<string, unknown> }
+export interface InstanceObservation {
+  instance_id: string;
+  instance_ref: string;
+  database_ref: string;
+  correlation_id: string;
+  account: string;
+  region: string;
+  db_host: string;
+  /** Latest span start for this (instance_ref, database_ref) pair; correlation_id names that span. */
+  observed_at_ms: number;
+  /** Earliest span start for the same pair (additive; equals observed_at_ms for one span). */
+  first_observed_at_ms: number;
+  /** Number of spans merged into this pair. */
+  observation_count: number;
+  source_id?: string;
+  provenance: 'trace_span';
+}
 export interface TraceEdge {
   source: string; target: string; rel: string; confidence: string;
-  meta: { spanCount: number; metricCount: number };
+  meta: {
+    spanCount: number; metricCount: number;
+    instance_observations?: InstanceObservation[];
+    instance_observations_omitted?: number;
+    /** Claimed instance→DB pairs that could not be bound to inventory (edge-level disclosure). */
+    instance_observations_unbound?: number;
+  };
 }
 export interface InfraNodeLike { id: string; kind?: string; meta?: Record<string, unknown> | null }
+const INSTANCE_OBSERVATION_CAP = 200;
+const WORKLOAD_POD_CAP = 50;
+const INSTANCE_ID = /^i-(?:[0-9a-f]{8}|[0-9a-f]{17})$/;
+const EC2_ARN = /^arn:(aws(?:-[a-z0-9-]+)?):ec2:([a-z0-9-]+):(\d{12}):instance\/(i-(?:[0-9a-f]{8}|[0-9a-f]{17}))$/;
 
 /** Backend identity remains explicit: unknown scope must not join unrelated datasources. */
 function scope(identity: TraceIdentity): string {
@@ -31,17 +60,85 @@ function spanKey(sourceId: string | undefined, traceId: string, spanId: string):
   return JSON.stringify([sourceId ?? '', traceId, spanId]);
 }
 
+/** Every dialable host an infra node answers on: its primary host plus cluster reader/custom
+ *  endpoints (infra-topology.ts `meta.hosts`). */
+function nodeHosts(node: InfraNodeLike): string[] {
+  const extra = Array.isArray(node.meta?.hosts) ? node.meta.hosts : [];
+  return [...new Set([node.meta?.host, ...extra].filter((h): h is string => typeof h === 'string' && h.length > 0)
+    .map(h => h.toLowerCase()))];
+}
+
 export function resolveInfraRef(dbHost: string | undefined, infraNodes: InfraNodeLike[]): string | undefined {
   if (!dbHost) return undefined;
   const host = dbHost.toLowerCase();
-  for (const node of infraNodes) {
-    const candidate = String(node.meta?.host ?? '').toLowerCase();
-    if (candidate && (candidate === host || candidate.startsWith(`${host}.`))) return node.id;
-  }
-  return undefined;
+  const exact = infraNodes.filter(node => nodeHosts(node).includes(host));
+  if (exact.length) return exact.length === 1 ? exact[0].id : undefined;
+  const prefixes = infraNodes.filter(node => nodeHosts(node).some(h => h.startsWith(`${host}.`)));
+  return prefixes.length === 1 ? prefixes[0].id : undefined;
 }
 
-/** A sampled dependency graph. Counts describe evidence, never a probability of correctness. */
+function exactEndpoint(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const host = value.trim().toLowerCase().replace(/\.$/, '');
+  if (host.length > 253 || !host.split('.').every(label =>
+    /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))) return undefined;
+  return host;
+}
+
+/** Unknown scope and conflicting EC2 claims cannot become a resource binding. */
+function claimedInstance(span: TraceSpan): string | undefined {
+  const instances = new Set<string>();
+  for (const [field, claim] of [['cloud', span.cloudResourceId], ['host', span.hostId],
+    ['instance', span.serviceInstanceId]] as const) {
+    if (!claim) continue;
+    if (INSTANCE_ID.test(claim)) instances.add(claim);
+    else if (claim.startsWith('arn:')) {
+      const arn = EC2_ARN.exec(claim);
+      if (!arn || arn[2] !== span.region || arn[3] !== span.accountId) return undefined;
+      instances.add(arn[4]);
+    } else if (field === 'cloud') return undefined;
+  }
+  return instances.size === 1 ? [...instances][0] : undefined;
+}
+
+function observedInstanceDatabasePair(
+  span: TraceSpan, infraNodes: InfraNodeLike[], trustedHostAccountId?: string,
+): InstanceObservation | null | undefined {
+  // undefined: no EC2 claim to bind; null: a claimed pair that cannot be bound (disclosed on its edge).
+  if (!span.dbHost || ![span.cloudResourceId, span.hostId, span.serviceInstanceId].some(claim =>
+    claim && (INSTANCE_ID.test(claim) || /^arn:[^:]+:ec2:/.test(claim)))) return undefined;
+  const account = span.accountId, region = span.region, observedAt = Math.floor(span.startMs);
+  if (!account || !/^\d{12}$/.test(account)
+    || !region || !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)+-\d+$/.test(region)
+    || !Number.isSafeInteger(observedAt) || observedAt < 0) return null;
+  const instanceId = claimedInstance(span), host = exactEndpoint(span.dbHost);
+  if (!instanceId || !host) return null;
+  const scoped = infraNodes.filter(node => {
+    const inventoryAccount = node.meta?.inventoryAccount;
+    const actualAccount = inventoryAccount === 'self' && /^\d{12}$/.test(trustedHostAccountId ?? '')
+      ? trustedHostAccountId : inventoryAccount;
+    return actualAccount === account && node.meta?.region === region;
+  });
+  const instances = scoped.filter(node => node.kind === 'ec2' && node.meta?.resourceId === instanceId);
+  const databases = scoped.filter(node => DB_ENDPOINT_KINDS.has(node.kind ?? '')
+    && typeof node.meta?.resourceId === 'string' && node.meta.resourceId.length > 0
+    && nodeHosts(node).some(candidate => exactEndpoint(candidate) === host));
+  if (instances.length !== 1 || databases.length !== 1) return null;
+  // A pair is attached to its own DB edge, rather than reconstructed from aggregate service bindings.
+  const correlationId = createHash('sha256').update(JSON.stringify([
+    span.sourceId ?? '', span.traceId, span.spanId, instances[0].id, databases[0].id,
+  ])).digest('hex');
+  return {
+    instance_id: instanceId, instance_ref: instances[0].id, database_ref: databases[0].id,
+    correlation_id: correlationId, account, region, db_host: host,
+    observed_at_ms: observedAt, first_observed_at_ms: observedAt, observation_count: 1,
+    ...(span.sourceId ? { source_id: span.sourceId } : {}),
+    provenance: 'trace_span',
+  };
+}
+
+/** A dependency graph from sampled spans, source-aggregated span rows and metric calls.
+ *  Counts describe evidence, never a probability of correctness. */
 export function buildTraceGraph(
   spans: TraceSpan[],
   metricCalls: ServiceGraphCall[],
@@ -53,6 +150,9 @@ export function buildTraceGraph(
   let orphanSpans = 0;
   let invalidSpans = 0;
   let unresolvedMessaging = 0;
+  // Per-edge pair index: the cap bounds distinct (instance, database) pairs, so a chatty
+  // instance cannot crowd out another instance that shares the same database.
+  const pairIndex = new WeakMap<TraceEdge, { kept: Map<string, InstanceObservation>; omitted: Set<string> }>();
   const valid = spans.filter((s) => {
     if (s.traceId && s.spanId && s.service) return true;
     invalidSpans++;
@@ -82,21 +182,47 @@ export function buildTraceGraph(
     if (current) {
       current.meta.spanCount += spanCount;
       current.meta.metricCount += metricCount;
+      return current;
     } else {
-      edges.set(key, { source, target, rel, confidence: 'observed', meta: { spanCount, metricCount } });
+      const added: TraceEdge = { source, target, rel, confidence: 'observed', meta: { spanCount, metricCount } };
+      edges.set(key, added);
+      return added;
     }
+  };
+  const runtimeNode = (claim: NonNullable<ReturnType<typeof runtimeClaim>>, span: TraceSpan) => {
+    // Exact ARN claims can connect caller and runtime telemetry only within one source/environment.
+    const id = nodeId('runtime', { sourceId: span.sourceId, environment: span.environment }, claim.arn);
+    if (!nodes.has(id)) nodes.set(id, { id, kind: 'runtime', label: claim.name,
+      meta: { ...claim, sourceId: span.sourceId ?? null, environment: span.environment ?? null } });
+    return id;
   };
 
   for (const span of byId.values()) {
+    // An aggregate row stands for `weight` spans; a raw span for one.
+    const w = Number.isSafeInteger(span.weight) && span.weight! > 0 ? span.weight! : 1;
     const sid = serviceNode(span.service, span);
     const meta = nodes.get(sid)!.meta;
-    meta.spanCount = Number(meta.spanCount) + 1;
-    if (span.status === 'error') meta.errorSpanCount = Number(meta.errorSpanCount) + 1;
-    if (!span.status || span.status === 'unset') meta.unknownStatusSpanCount = Number(meta.unknownStatusSpanCount) + 1;
+    meta.spanCount = Number(meta.spanCount) + w;
+    if (span.status === 'error') meta.errorSpanCount = Number(meta.errorSpanCount) + w;
+    if (!span.status || span.status === 'unset') meta.unknownStatusSpanCount = Number(meta.unknownStatusSpanCount) + w;
     meta.sampledDurationMs = Number(meta.sampledDurationMs) + Math.max(0, Number(span.durationMs) || 0);
     const traceIds = meta.traceIds as string[];
     if (traceIds.length < 20 && !traceIds.includes(span.traceId)) traceIds.push(span.traceId);
 
+    const hostRuntime = reportingRuntime(span);
+    if (hostRuntime) edge(runtimeNode(hostRuntime, span), sid, 'hosts', w);
+    const targetRuntime = span.kind === 'CLIENT' ? runtimeClaim(span.runtimeArn) : null;
+    if (targetRuntime) edge(sid, runtimeNode(targetRuntime, span), 'calls', w);
+    const model = modelClaim(span);
+    if (model) {
+      // Preserve cluster/namespace even with a host: private DNS may be reused by another cluster.
+      // An unknown endpoint is additionally caller-local.
+      const id = nodeId('model', span,
+        JSON.stringify([model.provider, model.model, model.endpoint, model.port, model.endpoint ? null : span.service]));
+      if (!nodes.has(id)) nodes.set(id, { id, kind: 'model', label: model.model,
+        meta: { ...model, sourceId: span.sourceId ?? null, environment: span.environment ?? null } });
+      edge(sid, id, 'calls', w);
+    }
     if (span.parentSpanId) {
       const parent = byId.get(spanKey(span.sourceId, span.traceId, span.parentSpanId));
       if (parent) {
@@ -125,9 +251,43 @@ export function buildTraceGraph(
         id, kind: 'db', label: name,
         meta: { system: span.dbSystem, host: span.dbHost ?? null, dbName: span.dbName ?? null,
           sourceId: span.sourceId ?? null, environment: span.environment ?? null,
+          accountId: span.accountId ?? null, region: span.region ?? null,
           ...(infraRef ? { infra_ref: infraRef } : {}) },
       });
-      edge(sid, id, 'queries');
+      const queryEdge = edge(sid, id, 'queries', w);
+      // Only an outbound client call is evidence that this instance queried the database;
+      // SERVER/PRODUCER/etc. spans carrying db attributes keep the service→DB edge only.
+      const observation = span.kind === 'CLIENT'
+        ? observedInstanceDatabasePair(span, infraNodes, trustedHostAccountId) : undefined;
+      if (observation === null) queryEdge.meta.instance_observations_unbound = (queryEdge.meta.instance_observations_unbound ?? 0) + w;
+      else if (observation) {
+        observation.observation_count = w;
+        const first = Number.isSafeInteger(span.firstStartMs) && span.firstStartMs! >= 0
+          ? Math.min(span.firstStartMs!, observation.observed_at_ms) : observation.observed_at_ms;
+        observation.first_observed_at_ms = first;
+        const observations = queryEdge.meta.instance_observations ??= [];
+        let index = pairIndex.get(queryEdge);
+        if (!index) pairIndex.set(queryEdge, index = { kept: new Map(), omitted: new Set() });
+        const key = JSON.stringify([observation.instance_ref, observation.database_ref]);
+        const existing = index.kept.get(key);
+        if (existing) {
+          existing.observation_count += w;
+          existing.first_observed_at_ms = Math.min(existing.first_observed_at_ms, first);
+          if (observation.observed_at_ms > existing.observed_at_ms
+            || (observation.observed_at_ms === existing.observed_at_ms
+              && observation.correlation_id > existing.correlation_id)) {
+            existing.observed_at_ms = observation.observed_at_ms;
+            existing.correlation_id = observation.correlation_id;
+          }
+        } else if (observations.length < INSTANCE_OBSERVATION_CAP) {
+          index.kept.set(key, observation);
+          observations.push(observation);
+        } else if (!index.omitted.has(key)) {
+          // Omitted counts distinct pairs, matching the distinct-pair cap.
+          index.omitted.add(key);
+          queryEdge.meta.instance_observations_omitted = (queryEdge.meta.instance_observations_omitted ?? 0) + 1;
+        }
+      }
     }
     if (span.k8sNamespace && span.k8sDeployment) {
       const name = `${span.k8sNamespace}/${span.k8sDeployment}`;
@@ -139,8 +299,11 @@ export function buildTraceGraph(
           sourceId: span.sourceId ?? null, pods: [] },
       });
       const pods = nodes.get(id)!.meta.pods as string[];
-      if (span.k8sPod && !pods.includes(span.k8sPod)) pods.push(span.k8sPod);
-      edge(sid, id, 'runs_on');
+      for (const pod of span.k8sPods ?? (span.k8sPod ? [span.k8sPod] : [])) {
+        if (pods.length >= WORKLOAD_POD_CAP) break;
+        if (!pods.includes(pod)) pods.push(pod);
+      }
+      edge(sid, id, 'runs_on', w);
     }
     if (span.messagingSystem && span.messagingDestination) {
       const destination = span.messagingDestination.trim();
@@ -169,14 +332,33 @@ export function buildTraceGraph(
           broker: qualified ? null : span.messagingBroker ?? null,
           cluster: qualified ? null : span.k8sCluster ?? null,
           sourceId: span.sourceId ?? null, environment: span.environment ?? null }) });
-      if (span.kind === 'PRODUCER') edge(sid, id, 'publishes');
-      if (span.kind === 'CONSUMER') edge(id, sid, 'consumes');
+      if (span.kind === 'PRODUCER') edge(sid, id, 'publishes', w);
+      if (span.kind === 'CONSUMER') edge(id, sid, 'consumes', w);
     }
   }
+  // Metric sources contribute service→service calls only. Tempo marks rows whose server is a
+  // database or queue (its label is a db.name or destination, not a service) or whose other side
+  // is uninstrumented (virtual_node); those are not service calls and are not drawn. Databases and
+  // queues come from trace spans, which carry their host-qualified identity.
+  let nonServiceMetricCalls = 0;
+  const metricWeight = (id: string, count: number) => {
+    const meta = nodes.get(id)!.meta;
+    meta.metricCount = Number(meta.metricCount ?? 0) + count;
+  };
   for (const call of metricCalls) {
     if (!Number.isFinite(call.count) || call.count <= 0) continue;
-    edge(serviceNode(call.client, call.clientIdentity ?? {}),
-      serviceNode(call.server, call.serverIdentity ?? {}), 'calls', 0, call.count);
+    if (call.evidence === 'trace') {
+      const client = serviceNode(call.client, call.clientIdentity ?? {});
+      const server = serviceNode(call.server, call.serverIdentity ?? {});
+      if (client !== server) edge(client, server, call.rel ?? 'calls', call.count, 0);
+      continue;
+    }
+    if (call.connectionType && call.connectionType !== 'unknown') { nonServiceMetricCalls++; continue; }
+    const client = serviceNode(call.client, call.clientIdentity ?? {});
+    const server = serviceNode(call.server, call.serverIdentity ?? {});
+    edge(client, server, 'calls', 0, call.count);
+    metricWeight(client, call.count); metricWeight(server, call.count);
   }
-  return { nodes: [...nodes.values()], edges: [...edges.values()], orphanSpans, invalidSpans, unresolvedMessaging };
+  return { nodes: [...nodes.values()], edges: [...edges.values()], orphanSpans, invalidSpans,
+    unresolvedMessaging, nonServiceMetricCalls };
 }

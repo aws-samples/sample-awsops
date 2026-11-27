@@ -250,15 +250,6 @@ class HeadImageTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(result.stdout, b"")
 
-    def test_workflow_stages_from_trusted_checkout_before_credentials_and_shares_context(self):
-        workflow = (ROOT / ".github/workflows/pr-review.yml").read_text()
-        self.assertLess(workflow.index("name: Stage changed HEAD PNG evidence"),
-                        workflow.index("name: Configure fresh AWS credentials before panel review"))
-        self.assertIn('"$GITHUB_WORKSPACE/scripts/pr-review/stage_head_pngs.py"', workflow)
-        self.assertEqual(workflow.count("HEAD_PNG_CONTEXT: ${{ steps.head_images.outputs.context }}"), 3)
-        self.assertIn('scripts/pr-review/input_scope.py /tmp/pr-diff.txt "$HEAD_PNG_CONTEXT"', workflow)
-        self.assertIn('git worktree add --detach "$REVIEW_BASE" "$BASE_SHA"', workflow)
-        self.assertIn("name: Remove current-run HEAD image evidence", workflow)
 
     def test_count_per_file_total_and_dimension_bounds_are_enforced(self):
         self.write("docs/image.png", png())

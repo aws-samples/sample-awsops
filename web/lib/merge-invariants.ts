@@ -94,8 +94,8 @@ export function scanV1PathLeak(): string[] {
     path.join(repoRoot, 'web/lib/merge-invariants.test.ts'),
   ]);
   const roots = ['web/app', 'web/lib', 'web/components'].map((p) => path.join(repoRoot, p));
-  const middleware = path.join(repoRoot, 'web/middleware.ts');
-  const files = existsSync(middleware) ? [middleware] : [];
+  const proxy = path.join(repoRoot, 'web/proxy.ts');
+  const files = existsSync(proxy) ? [proxy] : [];
 
   const hits = roots.flatMap((root) => scanDir(root));
   for (const file of files) {

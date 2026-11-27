@@ -22,7 +22,7 @@ AWSops は、AWS と Kubernetes 環境のための**リアルタイム読み取�
 プラットフォームは **Terraform ベースの MSA** です — ライブ AWS クエリは **Amazon Bedrock AgentCore MCP ツール**が担当し、アプリの状態は **Aurora Serverless v2(PostgreSQL 17)**に永続化されます。
 
 :::info
-AWSops は**読み取り専用**の運用ツールです。インフラの状況を照会・可視化・診断しますが、AWS リソースを変更しません。詳細は下記の「AWSops は私のインフラを変更しますか?」を参照してください。
+AWSops は既定で**読み取り専用**の運用ツールです。インフラの状況を照会・可視化・診断し、オーナーが承認した既定で無効の二つの例外を除き、AWS リソースを変更しません。詳細は下記の「AWSops は私のインフラを変更しますか?」を参照してください。
 :::
 
 ## どのようにデプロイされ、どんな構造で動作しますか?
@@ -33,7 +33,7 @@ AWSops は **Terraform**(`terraform/foundation/`、部分 S3 backend)でプロ�
 |------|------|
 | **IaC** | Terraform (S3 partial backend, `use_lockfile`)。CDK は廃止済み |
 | **エッジ** | CloudFront(TLS) → VPC Origin(`https-only:443`) → 内部 ALB HTTPS:443(リージョン ACM) → Fargate。**公開 ALB なし** |
-| **コンピュート** | ECS Fargate(arm64)。web は Next.js 15 thin-BFF、**ルートパス(`/`)**で配信 |
+| **コンピュート** | ECS Fargate(arm64)。web は Next.js 16 thin-BFF、**ルートパス(`/`)**で配信 |
 | **データ** | Aurora Serverless v2 (PostgreSQL 17)、node-pg でアクセス |
 | **AI** | AgentCore Runtime + 9 個のセクションゲートウェイの MCP Lambda ツール(ライブクエリ) |
 | **非同期ワーカー** | SQS → ESM(キルスイッチ) → dispatcher Lambda → Step Functions → Lambda または Fargate |
@@ -46,11 +46,11 @@ AWSops は **Terraform**(`terraform/foundation/`、部分 S3 backend)でプロ�
 
 ## AWSops は私のインフラを変更しますか?
 
-**いいえ。** AWSops は**読み取り専用の運用ダッシュボード + AI 診断**ツールです。**AWS リソースの変更と自律実行(autonomy)は恒久的に凍結(do-not-enable)**されています。どの画面や AI 機能も EC2 を終了したり、SG を修正したり、インフラを変更したりしません。
+**いいえ。** AWSops は**読み取り専用の運用ダッシュボード + AI 診断**ツールです。**AWS リソースの変更と自律実行(autonomy)は凍結(do-not-enable)**されています。どの画面や AI 機能も EC2 を終了したり、SG を修正したり、ワークロードのインフラを変更したりしません。例外はオーナーが承認した既定で無効の二つの操作だけで、いずれも AWSops スタック自身のリソースに限定されます: Aurora シークレット更新時の自身のウェブサービス再起動と、管理者がデータソースを追加した際に自身の AgentCore ゲートウェイでコネクタターゲットを一つ作成または更新する操作です(削除やゲートウェイ管理の権限はありません)。
 
 AI アシスタントと診断はライブデータを**照会**して分析・診断するのみで、変更(mutation)を実行しません。約 160 個の AgentCore MCP Lambda ツールはすべて read-only です。
 
-ガバナンスの下で許可される唯一の「書き込み」は**外部データ記録**です — たとえば外部システムにレポート・チケット・メッセージを残すことです。これは次のガードの下でのみ動作します:
+上記二つの例外を除き、ガバナンスの下で許可される唯一の「書き込み」は**外部データ記録**です — たとえば外部システムにレポート・チケット・メッセージを残すことです。これは次のガードの下でのみ動作します:
 
 - SSRF ガード(メタデータ/IMDS 遮断、destination allowlist)
 - シークレットは Secrets Manager で管理
@@ -59,7 +59,7 @@ AI アシスタントと診断はライブデータを**照会**して分析・�
 - デフォルト flag-OFF
 
 :::info
-外部「書き込み」は**データレコード**(チケット・メッセージ・レポート)であり、**AWS リソースの変更ではありません**。AWS インフラ自体に対する変更権限は、いかなる経路でも付与されません。
+外部「書き込み」は**データレコード**(チケット・メッセージ・レポート)であり、**AWS リソースの変更ではありません**。外部書き込みの経路は、AWS インフラ自体に対する変更権限を付与しません。
 :::
 
 ## どのようにログインしますか?
@@ -96,7 +96,7 @@ AWSops は EC2 インスタンス内の JSON ファイルではなく、**マネ
 ライブ AWS / Kubernetes データは **AgentCore MCP Lambda ツール**を通じて照会します。約 160 個の読み取り専用ツールが **9 個のセクションゲートウェイ**(network · container · data · security · cost · monitoring · iac · ops · external-obs)にわたって配置されています。
 
 - すべてのツールは read-only です。
-- ゲートウェイ数は **9 個**です (ADR-004 改訂 2026-06-24) — Prometheus·ClickHouse コネクタをホストする external-obs が 9 番目としてプロビジョニング・ルーティングされます。
+- ゲートウェイ数は **9 個**です  — Prometheus·ClickHouse コネクタをホストする external-obs が 9 番目としてプロビジョニング・ルーティングされます。
 - ローカル Steampipe(127.0.0.1:9193)サービスや 380 テーブルへの直接アクセスにはもう依存しません。
 
 ## 外部オブザーバビリティデータ(Prometheus / Loki / Tempo / ClickHouse / Datadog)も照会できますか?
@@ -113,7 +113,7 @@ AWSops は EC2 インスタンス内の JSON ファイルではなく、**マネ
 - **NL→query チャット注入** — 自然言語の質問を AI アシスタントがデータソースクエリに変換
 
 :::info
-コネクタ入力は **SSRF ガード + サイズ制限**を受けます(パース前の `readJsonBounded`、メタデータ/IMDS 遮断)。データソースプラットフォームは外部データを**読み取るだけ**であり、AWS リソースを変更しません。
+コネクタ入力は **SSRF ガード + サイズ制限**を受けます(パース前の `readJsonBounded`、メタデータ/IMDS 遮断)。データソースプラットフォームは外部データを**読み取るだけ**です。既定で無効の `connector_target_sync_enabled` を有効にした場合に限り、データソースの追加時に自身の AgentCore ゲートウェイで該当コネクタのターゲットを一つ作成または更新し、それ以外の AWS リソースは変更しません。
 :::
 
 ## テーマとモバイルをサポートしていますか?

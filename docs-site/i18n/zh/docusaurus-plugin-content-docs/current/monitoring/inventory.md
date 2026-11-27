@@ -30,6 +30,7 @@ import Screenshot from '@site/src/components/Screenshot';
 图表序列按最新快照数量动态排序，而不是固定列表：
 - **Core Resources**: 数量前 5 的实际资源类型 — 默认显示
 - **Other Resources**: 其后的最多 3 个类型 — 默认隐藏（点击标签显示）
+- 网络接口（ENI）不计入总数，因此不会进入 Core，并且无论排名如何都会加入 Other
 - 其余类型不出现在图表中，但全部列在下方的数量变化表中
 ### 安全序列（默认隐藏，独立开关组）
 - Public S3 Buckets、Open Security Groups、Unencrypted EBS — 采用安全页面判定标准的派生计数，不计入总数

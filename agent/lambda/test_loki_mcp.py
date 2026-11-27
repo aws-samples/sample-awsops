@@ -17,7 +17,7 @@ class _Base(unittest.TestCase):
 class TestQuery(_Base):
     def test_range_ns_window_and_encoding(self):
         cap = {}
-        with mock.patch.object(lm, "http_json", side_effect=lambda m,u,headers=None,body=None,timeout=None:(cap.update(url=u,headers=headers) or (200,{"status":"success","data":{"resultType":"streams","result":[]}}))):
+        with mock.patch.object(lm, "http_json", side_effect=lambda m,u,headers=None,body=None,timeout=None,max_bytes=None:(cap.update(url=u,headers=headers) or (200,{"status":"success","data":{"resultType":"streams","result":[]}}))):
             out = lm.lambda_handler({"tool_name":"loki_query_range","arguments":{"query":'{app="x"} |= "err"'}}, None)
         self.assertEqual(out["statusCode"],200)
         q=_qs(cap["url"]); self.assertIn("/loki/api/v1/query_range",cap["url"])
@@ -29,7 +29,7 @@ class TestQuery(_Base):
 
     def test_instant(self):
         cap={}
-        with mock.patch.object(lm,"http_json",side_effect=lambda m,u,headers=None,body=None,timeout=None:(cap.update(url=u) or (200,{"status":"success","data":{"resultType":"streams","result":[]}}))):
+        with mock.patch.object(lm,"http_json",side_effect=lambda m,u,headers=None,body=None,timeout=None,max_bytes=None:(cap.update(url=u) or (200,{"status":"success","data":{"resultType":"streams","result":[]}}))):
             lm.lambda_handler({"tool_name":"loki_query","arguments":{"query":"{app=\"x\"}"}}, None)
         self.assertIn("/loki/api/v1/query", cap["url"]); self.assertNotIn("query_range", cap["url"])
 

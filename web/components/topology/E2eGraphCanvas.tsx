@@ -113,6 +113,13 @@ function identityWithheld(node: E2eNode): boolean {
   return node.meta.correlation === 'ambiguous'
     || ownershipVeto(node.meta, text(node.meta.region), text(node.meta.vpcId ?? node.meta.vpc_id));
 }
+function telemetryClaim(node: E2eNode | null | undefined): boolean {
+  return node?.layer === 'service' && (['runtime', 'model', 'queue'].includes(node.kind)
+    || node.meta.identityProvenance === 'telemetry_claim');
+}
+function nodeSize(node: E2eNode | undefined) {
+  return telemetryClaim(node) ? { ...NODE_SIZE, height: 112 } : NODE_SIZE;
+}
 
 export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph }) {
   const { tt, lang } = useI18n();
@@ -186,7 +193,7 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
   }, [view, selected, overview, eligible.nodes]);
   const fitOptions = useMemo(() => ({ ...viewport, padding: 0.18, maxZoom: 1.15 }), [viewport]);
   const { nodes, edges } = useMemo(() => {
-    const positions = new Map(layoutFlow(view, { nodeSize: () => NODE_SIZE }).map((p) => [p.id, p]));
+    const positions = new Map(layoutFlow(view, { nodeSize: id => nodeSize(byId.get(id)) }).map((p) => [p.id, p]));
     const nodes: Node[] = view.nodes.map((n) => {
       const flow = flowOf(n);
       const color = identityWithheld(n) ? '#c08438'
@@ -204,10 +211,13 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
               {flow ? `${tt(METRIC_LABELS[text(n.meta.metric)] ?? (text(n.meta.metric) || '네트워크 관측'))} · ${metricValue(flow.value, text(n.meta.unit) || text(flow.unit), locale)}`
                 : `${tt(SOURCE_LABELS[n.layer])} · ${identityWithheld(n) ? tt('식별 보류') : n.kind}`}
             </span>
+            {telemetryClaim(n) && <span className="text-[10px] leading-tight text-amber-700 dark:text-amber-300">
+              {tt('Telemetry claim · AWS identity unverified')}
+            </span>}
           </div>
         ) },
         style: {
-          ...NODE_SIZE, padding: '8px 11px', borderRadius: 10, overflow: 'hidden',
+          ...nodeSize(n), padding: '8px 11px', borderRadius: 10, overflow: 'hidden',
           fontSize: 13, color: dark ? '#e3e9ee' : '#16202a',
           background: dark ? (n.kind === 'connection' ? '#0b3147' : '#18232f') : (n.kind === 'connection' ? '#eaf6fd' : '#ffffff'),
           border: `${n.id === selected?.id ? 2 : 1}px solid ${color}`, cursor: 'pointer',
@@ -373,6 +383,9 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
             ) : (
               <>
               {groupedTarget && <p className="mb-3 text-amber-700">{tt('여러 타깃을 묶은 구성 기록입니다.')}</p>}
+              {telemetryClaim(selected) && <p className="mb-3 text-amber-700">
+                {tt('Telemetry claim · AWS identity unverified')}
+              </p>}
               <dl className="space-y-2">
                 {selected.layer !== 'network' && typeof selected.meta.id === 'string' && (
                   <div><dt className="text-[10px] text-ink-400">ID</dt><dd className="break-all font-mono text-[10px]">{selected.meta.id}</dd></div>
@@ -387,7 +400,9 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
                   <dd className="text-[10px] text-ink-400">{tt('스냅샷 표시 시각은 개별 노드·관계의 수집 시각이나 관측 구간이 아닙니다.')}</dd>
                 </div>}
                 {['cluster', 'namespace', 'deployment', 'pod', 'pods', 'resolved', 'podName', 'podNamespace', 'instanceId', 'az', 'subnetId', 'serviceName', 'ip', 'vpcId', 'region', 'match', 'host', 'dbName', 'componentId', 'type',
+                  'arn', 'provider', 'model', 'endpoint', 'port', 'claimedAccountId', 'claimedRegion', 'identityProvenance',
                   'count', 'members', 'membersTruncated', 'memberIdentities', 'ownership_evidence', 'ownership_reason', 'ambiguity', 'e2e_correlation_blocked', 'workloadReadStatus'].map((key) => {
+                  if (key === 'endpoint' && object(selected.meta.endpoint)) return null;
                   if (groupedTarget && (key === 'pod' || key === 'namespace')) return null;
                   const nested = object(selected.meta.endpoint) ? selected.meta.endpoint[key] : undefined;
                   const value = selected.meta[key] ?? nested;
@@ -440,6 +455,10 @@ export default function E2eGraphCanvas({ graph: inputGraph }: { graph: E2eGraph 
                   {e.relation === 'configured-endpoint-match' && <p>
                     <span className="text-ink-400">{tt('대상 그룹 수집 시각')}</span>
                     {' · '}<CaptureTime value={e.meta?.targetCapturedAt} locale={locale} /></p>}
+                  {e.evidence === 'service' && typeof e.meta?.spanCount === 'number' && e.meta.spanCount > 0 &&
+                    <p>{tt('관측 스팬 수')} · {e.meta.spanCount.toLocaleString(locale)}</p>}
+                  {e.evidence === 'service' && typeof e.meta?.metricCount === 'number' && e.meta.metricCount > 0 &&
+                    <p>{tt('호출 메트릭 증가량')} · {e.meta.metricCount.toLocaleString(locale)}</p>}
                   {e.evidence === 'service' && <p>
                     <span className="text-ink-400">{tt('스냅샷 표시 시각')}</span>
                     {' · '}<CaptureTime value={e.meta?.snapshotCapturedAt} locale={locale} /></p>}

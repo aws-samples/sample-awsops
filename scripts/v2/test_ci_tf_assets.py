@@ -92,6 +92,12 @@ class TerraformAssetTests(unittest.TestCase):
         self.assertNotIn("TF_PLAN_ENC_KEY", env)
         self.assertNotIn("PIP_EXTRA_INDEX_URL", env)
 
+    def test_layer_resolution_targets_lambda_instead_of_ci_python(self):
+        installer = self.prepare_fixture_layer()
+        arguments = installer.call_args.args[0]
+        self.assertIn("--python-version", arguments)
+        self.assertEqual(arguments[arguments.index("--python-version") + 1], "3.14")
+
     def test_restores_exact_plan_time_files_in_a_clean_apply_directory(self):
         (self.plan / ".build/function.zip").chmod(0o600)
         (self.plan / ".build/layer/python/module.py").chmod(0o755)
@@ -160,7 +166,7 @@ resource "terraform_data" "repository" { input = "repository fixture" }
 resource "aws_lambda_function" "existing" {
   function_name = "offline-fixture"
   role = "arn:aws:iam::123456789012:role/offline-fixture"
-  runtime = "python3.12"
+  runtime = "python3.14"
   handler = "index.handler"
   filename = "./.build/function.zip"
   source_code_hash = "''' + encoded + '''"
@@ -169,11 +175,11 @@ resource "aws_lambda_function" "existing" {
         attributes = {
             "id": "offline-fixture", "function_name": "offline-fixture",
             "role": "arn:aws:iam::123456789012:role/offline-fixture",
-            "runtime": "python3.12", "handler": "index.handler",
+            "runtime": "python3.14", "handler": "index.handler",
             "filename": "./.build/function.zip", "source_code_hash": encoded,
         }
         (root / "terraform.tfstate").write_text(json.dumps({
-            "version": 4, "terraform_version": "1.15.7", "serial": 1,
+            "version": 4, "terraform_version": "1.17.1", "serial": 1,
             "lineage": "11111111-1111-4111-8111-111111111111", "outputs": {},
             "resources": [{
                 "mode": "managed", "type": "aws_lambda_function", "name": "existing",

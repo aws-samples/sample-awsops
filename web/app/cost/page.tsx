@@ -641,7 +641,7 @@ export default function CostPage() {
                                 </dd></div>
                             </dl>
                             <ul className="mt-3 flex flex-col gap-1 border-t border-ink-100 pt-2">
-                              {[...detail.monthly].reverse().map((mo) => (
+                              {detail.monthly.toReversed().map((mo) => (
                                 <li key={mo.month} className="flex items-center justify-between text-[12px]">
                                   <span className="text-ink-500">{mo.month}</span>
                                   <span className="tabular text-ink-700">{usd(mo.amount)}</span>

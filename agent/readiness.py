@@ -7,6 +7,8 @@ import os
 import re
 import threading
 import time
+
+import model_runtime
 from datetime import timedelta
 
 TOOL_NAMES = ("inventory-read-target___inventory_summary", "inventory-read-target___query_inventory")
@@ -112,6 +114,16 @@ def _fresh(value):
             and 0 <= value["age_minutes"] <= value["stale_after_minutes"])
 
 
+def _thinking_off(model_id):
+    """Keep the 128-token probe thinking-free; reasoning tokens count toward maxTokens.
+    Sonnet 5.5 rejects `disabled` and turns thinking off only via `between_tools`."""
+    if "claude-sonnet-5-5" in model_id:
+        return {"additionalModelRequestFields": {"thinking": {"type": "between_tools"}}}
+    if "claude-haiku-5" in model_id:
+        return {"additionalModelRequestFields": {"thinking": {"type": "disabled"}}}
+    return {}
+
+
 def check_readiness(payload, gateway_url, mcp_factory, region, model_id, *, progress=None):
     progress = progress or _Progress(payload)
     if not _valid(payload):
@@ -194,12 +206,12 @@ def check_readiness(payload, gateway_url, mcp_factory, region, model_id, *, prog
             # If session teardown fails, it is not evidence that the known ID was absent.
             progress.record(reason="gateway_unavailable", checks={"knownResource": True})
         progress.record(reason="model_failed")
-        model = _client("bedrock-runtime", region, min(23, progress.remaining()))
+        model = model_runtime.wrap(_client("bedrock-runtime", region, min(23, progress.remaining())))
         progress.remaining()
         # A bounded service-protocol check; inventory and resource data never enter this prompt.
         response = model.converse(
             modelId=model_id, messages=[{"role": "user", "content": [{"text": "Reply with exactly READY."}]}],
-            inferenceConfig={"maxTokens": 128})
+            inferenceConfig={"maxTokens": 128}, **_thinking_off(model_id))
         progress.remaining()
         message = response.get("output", {}).get("message", {})
         content = message.get("content")

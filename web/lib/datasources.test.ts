@@ -124,7 +124,7 @@ describe('getDatasource', () => {
 });
 
 describe('resolveConnConfig', () => {
-  const row = { id: 1, name: 'p', kind: 'prometheus', endpoint: 'http://p:9090', authType: 'none' as const, isDefault: true, enabled: true };
+  const row = { id: 1, name: 'p', kind: 'prometheus', endpoint: 'http://p:9090', authType: 'none' as const, isDefault: true, enabled: true, settings: {} };
 
   it('uses the ROW endpoint + authType when no SM credential exists (auth=none heal path)', async () => {
     getCredentialById.mockResolvedValueOnce(null); // no stored cred (auth=none, or never written)
@@ -138,7 +138,7 @@ describe('resolveConnConfig', () => {
     expect(getCredentialById).not.toHaveBeenCalledWith(1, 'prometheus'); // never the kind fallback
   });
 
-  it('clickhouse settings ride the conn config (database + timeoutS); other kinds never set them', async () => {
+  it('timeoutS rides the conn config for every kind; database stays ClickHouse-only', async () => {
     getCredentialById.mockResolvedValueOnce(null);
     const ch = { ...row, kind: 'clickhouse', settings: { database: 'metrics_db', timeoutS: 30 } };
     expect(await resolveConnConfig(ch)).toMatchObject({ database: 'metrics_db', timeoutS: 30 });
@@ -146,7 +146,7 @@ describe('resolveConnConfig', () => {
     const prom = { ...row, settings: { database: 'metrics_db', timeoutS: 30 } }; // kind: prometheus
     const cc = await resolveConnConfig(prom);
     expect(cc).not.toHaveProperty('database');
-    expect(cc).not.toHaveProperty('timeoutS');
+    expect(cc).toMatchObject({ timeoutS: 30 });
   });
 
   it('a stale blob database/timeoutS never leaks through — the ROW settings are authoritative', async () => {

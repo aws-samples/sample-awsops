@@ -138,10 +138,14 @@ export async function readGraphState(pool: Pick<Pool, 'query'>, account: string,
 }
 
 /** Same default as inventory_read_mcp._inventory_stale_after_minutes. */
+export function inventoryStaleAfterMs(): number {
+  const configured = Number(process.env.INVENTORY_STALE_AFTER_MINUTES ?? 30);
+  return (Number.isInteger(configured) && configured > 0 && configured <= 1440 ? configured : 30) * 60_000;
+}
+
 export function inventorySourcesStale(value: unknown): boolean {
   if (!Array.isArray(value) || !value.length) return true;
-  const configured = Number(process.env.INVENTORY_STALE_AFTER_MINUTES ?? 30);
-  const minutes = Number.isInteger(configured) && configured > 0 && configured <= 1440 ? configured : 30;
+  const staleAfterMs = inventoryStaleAfterMs();
   return value.some(source => {
     if (!source || typeof source !== 'object') return true;
     if (!Number.isSafeInteger(source.itemCount) || source.itemCount < 0) return true;
@@ -152,6 +156,6 @@ export function inventorySourcesStale(value: unknown): boolean {
       || (Object.prototype.hasOwnProperty.call(source, 'reasons') && (!Array.isArray(source.reasons) || source.reasons.length > 0))
       || source.producerStatus !== 'succeeded' || !['ok', 'empty'].includes(source.status) || clocks.some(clock =>
       typeof clock !== 'number' || !Number.isFinite(clock) || clock <= 0
-      || clock > Date.now() || Date.now() - clock > minutes * 60_000);
+      || clock > Date.now() || Date.now() - clock > staleAfterMs);
   });
 }

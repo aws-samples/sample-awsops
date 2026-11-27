@@ -3,41 +3,32 @@ import { useCallback, useEffect, useMemo, useRef, useState, Suspense, type React
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { useEntityTopology } from '@/components/topology/TopologyCapability';
+import ServiceTopologyView from '@/components/topology/ServiceTopologyView';
 import ServiceNetworkTopology from '@/components/topology/ServiceNetworkTopology';
+import SiteFlowView from '@/components/topology/SiteFlowView';
 import { Globe, Cloud, Network, Target as TargetIcon, Shield, CircleHelp, MoreHorizontal, Server, Zap, Hexagon, Boxes, Circle, Copy, Sparkles, Search, Webhook, Archive, type LucideIcon } from 'lucide-react';
-import { Background, Controls, MiniMap, Position, type Node, type Edge, type ReactFlowInstance } from '@xyflow/react';
+import { Background, Controls, MiniMap, Position, type Node, type Edge } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import PageHeader from '@/components/ui/PageHeader';
 import RefreshButton from '@/components/ui/RefreshButton';
 import DetailPanel from '@/components/ui/DetailPanel';
+import { isComposingKey } from '@/lib/ime';
 import { INVENTORY_TYPES } from '@/lib/inventory-types';
 import { buildFlowGraph, filterFromEntry, type FlowInput, type FlowKind, type FlowNode } from '@/lib/flow-topology';
 import { layoutFlow } from '@/lib/flow-layout';
-import { fetchEksIpMap, inventoryEvidence, type EksIpResolution, type InventoryEvidence, type AggregateRunStatus } from '@/lib/topology-config';
+import { type EksIpResolution, type AggregateRunStatus } from '@/lib/topology-config';
+import { loadFlowInput, rowLimit, type Row } from '@/lib/flow-load';
 import { useTheme } from '@/lib/use-theme';
 import { useActiveScope } from '@/lib/account-context';
 import { useI18n } from '@/components/shell/LanguageProvider';
+import { INTERACTIVE_FLOW_TYPES as TYPES } from '@/lib/flow-inventory-types';
+import { infraNodeId } from '@/lib/graph-identity';
+import { selectGraphPaths } from '@/lib/graph-display';
+import useGraphViewport from '@/components/topology/useGraphViewport';
 
 // ReactFlow touches the DOM on mount — load it client-only to avoid SSR mismatch.
 const ReactFlow = dynamic(() => import('@xyflow/react').then((m) => m.ReactFlow), { ssr: false });
-
-const TYPES = ['route53', 'cloudfront', 'alb', 'nlb', 'target_group', 'waf', 'ec2', 'lambda', 'ecs_task', 's3', 'subnet',
-  'apigatewayv2_api', 'apigatewayv2_integration', 'cloudfront_vpc_origin', 'apigatewayv2_route', 'alb_listener_rule'] as const;
-type InvType = (typeof TYPES)[number];
-type Row = Record<string, unknown>;
-
-// InvType → FlowInput key (target_group→tg, ecs_task→ecsTask). ec2/lambda/ecs enrich target labels.
-// s3 resolves CloudFront S3 origins; apigatewayv2_* resolve execute-api origins → API GW → Lambda/LB;
-// cloudfront_vpc_origin resolves CloudFront VPC origins → internal ALB/NLB.
-type RowKey = 'route53' | 'cloudfront' | 'alb' | 'nlb' | 'tg' | 'waf' | 'ec2' | 'lambda' | 'ecsTask' | 's3' | 'subnet'
-  | 'apigatewayv2_api' | 'apigatewayv2_integration' | 'cloudfront_vpc_origin' | 'apigatewayv2_route' | 'alb_listener_rule';
-const FLOW_KEY: Record<InvType, RowKey> = {
-  route53: 'route53', cloudfront: 'cloudfront', alb: 'alb', nlb: 'nlb', target_group: 'tg', waf: 'waf',
-  ec2: 'ec2', lambda: 'lambda', ecs_task: 'ecsTask', s3: 's3', subnet: 'subnet',
-  apigatewayv2_api: 'apigatewayv2_api', apigatewayv2_integration: 'apigatewayv2_integration',
-  cloudfront_vpc_origin: 'cloudfront_vpc_origin',
-  apigatewayv2_route: 'apigatewayv2_route', alb_listener_rule: 'alb_listener_rule',
-};
 
 // Node fill/border per FlowKind. Light + dark variants (ReactFlow dark colorMode flips default
 // node text to light, so dark nodes get explicit dark fills + light text). Target nodes are
@@ -131,11 +122,6 @@ function nodeLabel(n: FlowNode): ReactNode {
   );
 }
 
-const ROW_CAP = 500; // /api/inventory caps limit at 500
-const INVENTORY_LANES = 2; // Shared max:3 PG pool also serves authentication and other reads.
-const CRITICAL_PAGES = 20;
-const CRITICAL_TYPES = new Set<string>(['target_group', 'ecs_task', 'subnet']);
-const rowLimit = (type: string) => ROW_CAP * (CRITICAL_TYPES.has(type) ? CRITICAL_PAGES : 1);
 const ISSUE_STATUSES = ['failed', 'partial'] as const;
 type InventoryIssue = { type: string; status: typeof ISSUE_STATUSES[number] };
 const EVIDENCE_COPY = {
@@ -193,62 +179,6 @@ const EVIDENCE_COPY = {
   },
 };
 
-const record = (v: unknown): v is Row => v !== null && typeof v === 'object' && !Array.isArray(v);
-const nonempty = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
-
-async function fetchType(t: InvType | 'vpc' | 'security_group', inventoryScope: string, signal: AbortSignal): Promise<InventoryEvidence & { rows: Row[]; finishedAt: string | null; capped: boolean; incomplete?: boolean }> {
-  const scopeQuery = new URLSearchParams(inventoryScope), account = scopeQuery.get('accounts') ?? 'self';
-  const critical = CRITICAL_TYPES.has(t);
-  const rows: Row[] = [], seen = new Set<string>();
-  let version: string | undefined, finishedAt: string | null = null;
-  let firstRun: Row | null = null;
-  const result = (capped: boolean, incomplete = false) => ({ rows, finishedAt, capped, incomplete, ...inventoryEvidence(rows, firstRun, account === 'self') });
-  try {
-    for (let page = 0; page < (critical ? CRITICAL_PAGES : 1); page++) {
-      if (signal.aborted) throw new Error();
-      const qs = new URLSearchParams(scopeQuery);
-      qs.set('limit', String(ROW_CAP)); qs.set('offset', String(page * ROW_CAP));
-      const r = await fetch(`/api/inventory/${t}?${qs}`, { signal });
-      if (!r.ok) throw new Error();
-      const d: unknown = await r.json();
-      if (signal.aborted || !record(d) || d.error || d.status === 'error'
-        || !Array.isArray(d.rows) || d.rows.length > ROW_CAP) throw new Error();
-      const run = record(d.run) ? d.run : null;
-      const incomplete = critical && ['running', 'partial', 'failed'].includes(String(run?.status));
-      if (critical) {
-        if (d.consistency !== 'statement-snapshot') throw new Error();
-        // The global type sweep covers every account. Only a stable success permits ownership.
-        if (!run || (!incomplete && (run.status !== 'succeeded' || !nonempty(run.finished_at) || !Number.isFinite(Date.parse(run.finished_at))
-          || !nonempty(run.last_success_at) || !Number.isFinite(Date.parse(run.last_success_at))
-          || !Number.isSafeInteger(run.row_count) || (run.row_count as number) < 0))) throw new Error();
-        const current = JSON.stringify([run.status, run.finished_at, run.last_success_at, run.row_count]);
-        if (version !== undefined && version !== current) return result(false, true);
-        version = current;
-
-      }
-      if (page === 0) firstRun = run;
-      for (const row of d.rows) {
-        if (!record(row) || !record(row.data)) throw new Error();
-        if (critical) {
-          if (!nonempty(row.account_id) || !nonempty(row.region) || !nonempty(row.resource_id)
-            || (account !== '__all__' && !account.split(',').includes(row.account_id))) throw new Error();
-          const key = JSON.stringify([row.account_id, row.region, row.resource_id]);
-          if (seen.has(key)) throw new Error();
-          seen.add(key);
-        }
-        rows.push({ ...row.data, account_id: row.account_id, resource_id: row.resource_id, region: row.region, captured_at: row.captured_at });
-      }
-      finishedAt = run && typeof run.finished_at === 'string' ? run.finished_at : null;
-      // Keep a bounded cached page during a sweep, without mixing mutable pages or proving absence.
-      if (incomplete || d.rows.length < ROW_CAP) return result(false, incomplete);
-    }
-    return result(true); // 10,000 critical rows still need an end-of-data proof.
-  } catch {
-    // Fetch/JSON errors can contain response fragments; expose only the fixed type-scoped reason.
-    throw new Error(`${t}: invalid inventory response`);
-  }
-}
-
 // ---- VPC / subnet / security-group id → name resolution (for the detail panel) ----
 type NetMaps = { vpc: Map<string, string>; subnet: Map<string, string>; sg: Map<string, string> };
 const emptyNetMaps = (): NetMaps => ({ vpc: new Map(), subnet: new Map(), sg: new Map() });
@@ -289,7 +219,21 @@ export default function TopologyPage() {
   return <Suspense fallback={null}><TopologyScope /></Suspense>;
 }
 
+// `/topology` opens on the site view. The old request-flow graph lives at `?view=flow` (`?view=e2e` is its
+// service + network sub-view). Deep links that predate the site view carry no `view` but do carry params only
+// the flow graph reads, so they keep opening the flow graph:
+//   cluster, clusterScope  EKS/ECS cluster filter          monitor, metric, category, range  network filters (e2e)
+//   lens                   `lens=service` unified graph
+// `?view=site` stays an alias of the default. Any other `view` value is the flow graph.
+const FLOW_ONLY_PARAMS = ['cluster', 'clusterScope', 'lens', 'monitor', 'metric', 'category', 'range'] as const;
+function isSiteView(params: URLSearchParams): boolean {
+  const view = params.get('view');
+  if (view !== null) return view === 'site';
+  return !FLOW_ONLY_PARAMS.some((k) => params.has(k));
+}
+
 function TopologyScope() {
+  const enabled = useEntityTopology();
   const [scope, , ready] = useActiveScope();
   const router = useRouter();
   const params = useSearchParams() ?? new URLSearchParams();
@@ -306,17 +250,24 @@ function TopologyScope() {
     const next = new URLSearchParams(params.toString());
     if (resetCluster) {
       next.delete('cluster'); next.delete('clusterScope');
+      if (!next.has('view')) next.set('view', 'flow');  // without the cluster param a bare URL would open the site view
     } else if (params.has('cluster') && clusterScope === null) next.set('clusterScope', inventoryScope);
     else return;
     router.replace(`/topology${next.size ? `?${next}` : ''}`, { scroll: false });
   }, [ready, resetCluster, inventoryScope, clusterScope, params, router]);
   // Bind initial deep links too: Back/Forward must not restore another scope's cluster.
   if (!ready || resetCluster) return null;
+  if (enabled && params.get('lens') === 'service') return <ServiceTopologyView key={inventoryScope}
+    supported={account === 'self' && scope.regions === '__all__' && scope.includeGlobal} />;
+  // The site view loads its own inventory; mounting it here (not inside ScopedTopologyPage) avoids a second
+  // full inventory load against the shared PG pool.
+  if (isSiteView(params)) return <SiteFlowView key={inventoryScope} inventoryScope={inventoryScope} />;
   return <ScopedTopologyPage key={inventoryScope} activeAccount={account} inventoryScope={inventoryScope} />;
 }
 
 function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: string; inventoryScope: string }) {
   const { tt, lang } = useI18n();
+  const entitiesEnabled = useEntityTopology();
   const router = useRouter();
   const params = useSearchParams() ?? new URLSearchParams();
   const e2e = params.get('view') === 'e2e';
@@ -339,6 +290,7 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
   const [clusterFilter, setClusterFilter] = useState<string>('');
   const [selected, setSelected] = useState<FlowNode | null>(null);
   const [query, setQuery] = useState('');
+  const [showWholeGraph, setShowWholeGraph] = useState(false);
   const [netMaps, setNetMaps] = useState<NetMaps>(emptyNetMaps);
   const loadGeneration = useRef(0);
   const loadAbort = useRef<AbortController | null>(null);
@@ -370,48 +322,16 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
       setEksResolution(null);
     }
     try {
-      const NET = ['vpc', 'security_group'] as const;
-      const read = async (type: InvType | typeof NET[number]) => {
-        try { return { ...await fetchType(type, inventoryScope, controller.signal), readFailed: false, error: '' }; }
-        catch { return { rows: [] as Row[], finishedAt: null, capped: false, incomplete: false,
-          ...inventoryEvidence([], null, false), readFailed: true, error: `${type}: invalid inventory response` }; }
-      };
-      const types = [...TYPES, ...NET];
-      const results: Awaited<ReturnType<typeof read>>[] = new Array(types.length);
-      let next = 0;
-      const lane = async () => {
-        for (;;) {
-          const index = next++;
-          if (index >= types.length) return;
-          // fetchType stops before issuing a request when aborted; fill every result slot
-          // so queued/unread types cannot be mistaken for successful empty inventories.
-          results[index] = await read(types[index]);
-        }
-      };
-      const [, eks] = await Promise.all([
-        Promise.all(Array.from({ length: INVENTORY_LANES }, lane)),
-        account === 'self' ? fetchEksIpMap(controller.signal) : Promise.resolve(null),
-      ]);
+      const loaded = await loadFlowInput(inventoryScope, controller.signal, entitiesEnabled);
       if (!current()) return;
-      const res = results.slice(0, TYPES.length), net = results.slice(TYPES.length);
-      const failed = results.filter(result => result.readFailed);
+      const { input: out, types, results, res, net, eks, failed } = loaded;
       setErr(failed.map(result => result.error).join('; '));
-      if (res.every(result => result.readFailed)) {
+      if (loaded.allFailed) {
         setRetained(displayedAccount.current === account && displayedHasNodes.current);
         return;
       }
-      const readIssue = (type: InvType): 'failed' | 'capped' | undefined => {
-        const result = res[TYPES.indexOf(type)];
-        return result.readFailed || result.incomplete ? 'failed' : result.capped ? 'capped' : undefined;
-      };
-      const out: FlowInput = { ipResolved: eks?.map, ownershipRead: {
-        targetGroup: readIssue('target_group'), ecsTask: readIssue('ecs_task'), subnet: readIssue('subnet'),
-        eksScopes: eks?.blockedScopes, eksUnknown: eks?.globalUnknown,
-        ...(account === 'self' ? { eksRegions: eks?.coveredRegions } : { configurationOnly: true }),
-      } };
-      TYPES.forEach((t, i) => { out[FLOW_KEY[t]] = res[i].rows; });
       const nextHasNodes = buildFlowGraph(out).nodes.length > 0;
-      const incomplete = res.some(result => result.incomplete);
+      const incomplete = loaded.incomplete;
       if (!nextHasNodes && (failed.length > 0 || incomplete)
         && displayedAccount.current === account && displayedHasNodes.current) {
         setRetained(true);
@@ -457,7 +377,7 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
       clearTimeout(deadline);
       if (current()) setBusy(false);
     }
-  }, [activeAccount, inventoryScope]);
+  }, [activeAccount, inventoryScope, entitiesEnabled]);
 
   useEffect(() => { void load(); return () => { loadGeneration.current += 1; loadAbort.current?.abort(); }; }, [load]);
 
@@ -538,31 +458,17 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
     return gFull;
   }, [full, entryId, clusterFilter]);
 
-  const { nodes, edges } = useMemo(() => {
+  const focusedGraph = useMemo(() => {
     if (e2e) return { nodes: [], edges: [] };
-    const gFull = scopedGraph;
-    // Focus: clicking a node collapses the view to ITS connected path (up + downstream), then
-    // re-lays-out and re-centers (imperative fitView in the effect below) so the active subgraph
-    // fills the screen — instead of dimming the rest and letting it overflow/clip off one screen.
+    return selected && scopedGraph.nodes.some(n => n.id === selected.id)
+      ? selectGraphPaths(scopedGraph, [selected.id]) : scopedGraph;
+  }, [scopedGraph, selected, e2e]);
+  const viewport = useGraphViewport(focusedGraph.nodes, focusedGraph.edges, 1.2);
+  const { nodes, edges } = useMemo(() => {
+    const g = focusedGraph;
     const focusId = selected?.id ?? null;
-    let g = gFull;
-    if (focusId && gFull.nodes.some((n) => n.id === focusId)) {
-      const adj = new Map<string, string[]>();
-      for (const e of gFull.edges) {
-        (adj.get(e.source) ?? adj.set(e.source, []).get(e.source)!).push(e.target);
-        (adj.get(e.target) ?? adj.set(e.target, []).get(e.target)!).push(e.source);
-      }
-      const connected = new Set([focusId]);
-      const q = [focusId];
-      while (q.length) { const c = q.shift()!; for (const nb of adj.get(c) ?? []) if (!connected.has(nb)) { connected.add(nb); q.push(nb); } }
-      g = {
-        nodes: gFull.nodes.filter((n) => connected.has(n.id)),
-        edges: gFull.edges.filter((e) => connected.has(e.source) && connected.has(e.target)),
-      };
-    }
-    // In focus mode lay out top→bottom (TB): the active path is a thin chain that fits the tall,
-    // narrow column left of the docked detail panel far better than a wide LR row. Full graph = LR.
-    const rankdir: 'LR' | 'TB' = focusId ? 'TB' : 'LR';
+    // Narrow canvases and focused paths use vertical layout with matching handles.
+    const rankdir: 'LR' | 'TB' = focusId || viewport.vertical ? 'TB' : 'LR';
     const pos = Object.fromEntries(layoutFlow(g, { rankdir }).map((p) => [p.id, p]));
 
     const nodes: Node[] = g.nodes.map((n) => {
@@ -593,16 +499,10 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
       style: e.confidence === 'inferred' ? { strokeDasharray: '4 4' } : {},
     }));
     return { nodes, edges };
-  }, [scopedGraph, dark, selected, e2e]);
+  }, [focusedGraph, dark, selected, viewport.vertical]);
 
-  // Re-center imperatively (NOT by remounting — a remount destroys the user's pan/zoom and makes
-  // dragging feel broken). Keep one mounted instance; refit when the entry filter or focus changes.
-  // rAF defers the fit until after the detail panel has docked and the layout has settled.
-  const rfRef = useRef<ReactFlowInstance<Node, Edge> | null>(null);
-  useEffect(() => {
-    const id = requestAnimationFrame(() => rfRef.current?.fitView({ padding: 0.2, duration: 300, maxZoom: 1.2 }));
-    return () => cancelAnimationFrame(id);
-  }, [entryId, clusterFilter, selected?.id]);
+  const chooseEntry = !showWholeGraph && !entryId && !clusterFilter && !selected
+    && full.nodes.length > 40 && entryOptions.cf.length + entryOptions.lb.length > 0;
 
   // Detail for the clicked node: resource nodes show their full inventory row (every field —
   // vpc, subnet, tags …); target/origin nodes synthesize a small detail from their meta.
@@ -636,6 +536,7 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
   const onEntry = (e: React.ChangeEvent<HTMLSelectElement>) => setEntryId(e.target.value);
   const onCluster = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const value = e.target.value, next = new URLSearchParams(params.toString());
+    if (!next.has('view')) next.set('view', 'flow');
     if (value) { next.set('cluster', value); next.set('clusterScope', inventoryScope); }
     else { next.delete('cluster'); next.delete('clusterScope'); }
     setClusterFilter(value); setSelected(null);
@@ -676,8 +577,12 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
   const NET_CAPABLE = new Set(['alb', 'nlb', 'target_group', 'ec2', 'lambda', 'ecs_task']);
   const sm = (selected?.meta ?? {}) as Record<string, unknown>;
   const smRow = (sm.row ?? {}) as Record<string, unknown>;
+  const resourceAccount = typeof smRow.account_id === 'string' && /^(self|\d{12})$/.test(smRow.account_id)
+    ? smRow.account_id : null;
   const rgId = sm.invType && NET_CAPABLE.has(String(sm.invType)) && smRow.resource_id
-    ? `${sm.invType}:${smRow.resource_id}` : null;
+    ? resourceAccount && typeof smRow.region === 'string' && smRow.region
+      ? infraNodeId(String(sm.invType), String(smRow.resource_id), resourceAccount, smRow.region)
+      : `${sm.invType}:${smRow.resource_id}` : null;
   const detailActions = selected ? (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
@@ -717,6 +622,9 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
           {tt('선택 계정의 전체 구성으로 비교합니다. 진입점·클러스터 필터는 기본 화면에만 적용됩니다.')}
         </p>}
         {err && <div className="text-[13px] text-rose-600">{tt('로드 실패:')} {err}</div>}
+        {entitiesEnabled && eksResolution?.bindingRead?.status === 'withheld' && <p role="status">
+          {tt('Pod 식별 근거를 확인할 수 없습니다.')} ({eksResolution.bindingRead.reasons.join(', ')})
+        </p>}
         {full.nodes.some(n => n.meta?.ambiguity === 'eks_not_enumerated') && <div role="status" className="text-[13px] text-warning">
           {tt('EKS 조회 범위 밖의 대상은 소유권 미확인입니다. 조회 리전:')} {eksResolution?.coveredRegions.join(', ')}
         </div>}
@@ -746,21 +654,25 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
   </>;
   const viewHref = (view: boolean) => {
     const next = new URLSearchParams(params.toString());
-    if (view) next.set('view', 'e2e'); else next.delete('view');
+    next.set('view', view ? 'e2e' : 'flow');
     return `/topology${next.size ? `?${next}` : ''}`;
   };
-  if (e2e) return <ServiceNetworkTopology configured={full} account={activeAccount}
+  if (e2e) return <ServiceNetworkTopology podBindings={entitiesEnabled ? eksResolution?.bindings?.filter(binding => {
+    const regions = new URLSearchParams(inventoryScope).get('regions');
+    return regions === '__all__' || (binding.region != null && regions?.split(',').includes(binding.region));
+  }) : undefined} configured={full} account={activeAccount}
     configuration={{ complete: !!data && !identityBlocked, loading: busy || (!data && !err), capturedAt: syncedAt, error: '',
       failedTypes: [], cappedTypes: [] }} evidence={inventoryEvidencePanel}
     backHref={viewHref(false)} onRefresh={() => void load()} />;
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full min-w-0 flex-col overflow-y-auto">
       <PageHeader
         title="Topology"
         subtitle="요청 흐름 그래프 (Route53 → CloudFront → LB → Target Group → 타깃)"
+        className="lg:flex-col lg:items-stretch"
         right={
-          <div className="flex flex-wrap items-center justify-end gap-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
             <div className="relative">
               <div className="flex items-center gap-1 rounded-md border border-ink-200 bg-card px-2 py-1">
                 <Search size={13} className="text-ink-400" />
@@ -768,7 +680,7 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter' && searchMatches[0]) { setSelected(searchMatches[0]); setQuery(''); }
+                    if (e.key === 'Enter' && !isComposingKey(e) && searchMatches[0]) { setSelected(searchMatches[0]); setQuery(''); }
                     if (e.key === 'Escape') setQuery('');
                   }}
                   placeholder={tt('리소스 이름 검색…')}
@@ -807,6 +719,10 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
               ))}
             </select>
             <RefreshButton busy={busy} onClick={load} capturedAt={captureThrough} />
+            {entitiesEnabled && <Link href="/topology?lens=service" className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px]">{tt('통합 서비스 그래프')}</Link>}
+            <Link href="/topology" scroll={false} className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] text-ink-600 hover:bg-ink-50">
+              {tt('사이트 흐름 →')}
+            </Link>
             <Link href={viewHref(true)} scroll={false} className="rounded-md border border-ink-200 bg-card px-2 py-1 text-[12px] text-ink-600 hover:bg-ink-50">
               {tt('서비스 + 네트워크 →')}
             </Link>
@@ -852,15 +768,30 @@ function ScopedTopologyPage({ activeAccount, inventoryScope }: { activeAccount: 
                   );
                 })}
               </div>
-              <div className="flex-1 min-h-0 w-full rounded-lg border border-ink-100 bg-card">
-                <ReactFlow nodes={nodes} edges={edges} fitView fitViewOptions={{ padding: 0.2 }} colorMode={dark ? 'dark' : 'light'} proOptions={{ hideAttribution: true }}
-                  onInit={(inst) => { rfRef.current = inst; }}
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <span className="text-ink-500">{tt('진입점을 선택하면 해당 요청 경로를 펼칩니다.')}</span>
+                <button type="button" onClick={() => { setShowWholeGraph(v => !v); setEntryId(''); setSelected(null); }}
+                  className="ml-auto rounded-md border border-ink-200 bg-card px-3 py-1.5">{tt(showWholeGraph ? '진입점 중심 보기' : '전체 그래프')}</button>
+              </div>
+              <div ref={viewport.container} className="min-h-[440px] min-w-0 flex-1 w-full overflow-hidden rounded-lg border border-ink-100 bg-card md:min-h-64">
+                {chooseEntry ? <div className="h-full overflow-y-auto p-4">
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                    {[...entryOptions.cf, ...entryOptions.lb].map(n => <button key={n.id} type="button"
+                      onClick={() => { setEntryId(n.id); setSelected(null); }}
+                      className="min-w-0 rounded-lg border border-ink-200 bg-card p-4 text-left hover:border-brand-400">
+                      <span className="text-[10px] uppercase text-ink-500">{FLOW_KIND_LABELS[n.kind]}</span>
+                      <span className="mt-1 block truncate text-sm font-semibold" title={n.label}>{n.label}</span>
+                      <span className="mt-3 block text-xs text-brand-700">{tt('경로 보기 →')}</span>
+                    </button>)}
+                  </div>
+                </div> : <ReactFlow nodes={nodes} edges={edges} fitView minZoom={0.05} fitViewOptions={{ padding: 0.16, maxZoom: 1.2 }} colorMode={dark ? 'dark' : 'light'} proOptions={{ hideAttribution: true }}
+                  onInit={viewport.onInit}
                   onNodeClick={(_, node) => setSelected(((node.data as { fnode?: FlowNode })?.fnode) ?? null)}
                   onPaneClick={() => setSelected(null)}>
                   <Background />
-                  <Controls />
-                  <MiniMap pannable zoomable />
-                </ReactFlow>
+                  <Controls showInteractive={false} />
+                  {showWholeGraph && <MiniMap className="hidden md:block" pannable zoomable />}
+                </ReactFlow>}
               </div>
             </>
           )

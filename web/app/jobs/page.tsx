@@ -108,7 +108,7 @@ export default function JobsPage() {
             <select value={type} onChange={(e) => setType(e.target.value)}
               className="rounded border border-ink-200 bg-card px-2 py-2">
               <option value="">{copy.all}</option>
-              {['report', 'compliance', 'datasource_index', 'finops_baseline', 'network_path', 'noop', 'noop-heavy']
+              {['report', 'compliance', 'connector_target_sync', 'datasource_index', 'finops_baseline', 'network_path', 'noop', 'noop-heavy']
                 .map((value) => <option key={value} value={value}>{value}</option>)}
             </select>
           </label>

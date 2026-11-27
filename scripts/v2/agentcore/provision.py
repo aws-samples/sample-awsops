@@ -124,9 +124,17 @@ def gateway_url(gw_id, region):
     return f"https://{gw_id}.gateway.bedrock-agentcore.{region}.amazonaws.com/mcp"
 
 
-def ensure_gateways(ctrl, ac):
-    """Reconcile catalog role/description without changing deployed auth/protocol.
+# Inbound auth for every section gateway. All callers (agent.py create_gateway_transport)
+# SigV4-sign with the Runtime role, which holds bedrock-agentcore:InvokeGateway (ai.tf).
+GATEWAY_AUTHORIZER = "AWS_IAM"
 
+
+def ensure_gateways(ctrl, ac):
+    """Reconcile catalog role/description; report unauthenticated (NONE) inbound auth.
+
+    UpdateGateway rejects authorizer-type changes, so a NONE gateway records ERR
+    (gateway_auth_replacement_required) and needs the documented manual replacement;
+    no automatic destructive recreation. Deployed auth/protocol settings are preserved.
     Known IDs survive read/update failures for Runtime routing and ADR-017 teardown.
     CREATED/UPDATED records mean the API accepted a request, not readiness.
     """
@@ -144,6 +152,8 @@ def ensure_gateways(ctrl, ac):
             try:
                 gw = ctrl.get_gateway(gatewayIdentifier=gid)
                 role_drift = gw.get("roleArn") != ac["role_arn"]
+                if gw.get("authorizerType") == "NONE":
+                    log(f"gateway:{key}", "ERR", "gateway_auth_replacement_required")
                 failure_status = "ERR" if role_drift else "WARN"
                 want = catalog.GATEWAY_DESCRIPTIONS.get(key, key)
                 if role_drift or gw.get("description") != want:
@@ -169,7 +179,7 @@ def ensure_gateways(ctrl, ac):
                 name=name,
                 roleArn=ac["role_arn"],
                 protocolType="MCP",
-                authorizerType="NONE",
+                authorizerType=GATEWAY_AUTHORIZER,
                 description=catalog.GATEWAY_DESCRIPTIONS.get(key, key),
             )
             ids[key] = resp["gatewayId"]
@@ -1047,6 +1057,30 @@ def ensure_interpreter(ctrl):
         return ""
 
 
+MODEL_ENV_KEYS = frozenset({
+    "MODEL_PROVIDER", "AGENT_MODEL_ID", "DATASOURCE_QUERYGEN_MODEL_ID",
+    "DATASOURCE_QUERYGEN_FALLBACK_MODEL_ID", "SYNTHESIS_MODEL_ID", "CODEGEN_MODEL_ID",
+    "ASSISTANT_MODEL_ID", "DIAGNOSIS_MODEL_SONNET", "DIAGNOSIS_MODEL_OPUS", "DIAGNOSIS_TITLE_MODEL",
+    "GRAPH_QUERYGEN_MODEL_ID", "FINOPS_EXPLAIN_MODEL_ID", "INSIGHT_MODEL_ID", "RCA_MODEL_ID",
+    "ANTHROPIC_API_KEY_SECRET_ARN"})
+_MODEL_ENV_VALUE = re.compile(r"[A-Za-z0-9._:/+=@-]{0,256}")
+
+
+def runtime_model_env(value):
+    """Validated model_provider env from the Terraform output; anything unexpected is dropped."""
+    if not isinstance(value, dict):
+        return {}
+    kept = {k: v for k, v in value.items()
+            if k in MODEL_ENV_KEYS and isinstance(v, str) and _MODEL_ENV_VALUE.fullmatch(v)}
+    dropped = sorted(str(k)[:64] for k in value if k not in kept)
+    if dropped:
+        log("runtime", "WARN", f"model_env keys dropped (unknown key or invalid value): {', '.join(dropped)}")
+    return kept
+# Chat models any model_provider profile may select (Bedrock Luna, Bedrock Sonnet 5.5, Anthropic API
+# Sonnet 5.5); Terraform validation and the profile IAM bound which one a stack can actually use.
+AGENT_MODEL_IDS = ("global.openai.gpt-6-luna", "global.anthropic.claude-sonnet-5-5", "claude-sonnet-5-5")
+
+
 def ensure_runtime(ctrl, ac, gw_ids):
     region = ac["region"]
     gateways_json = json.dumps({k: gateway_url(v, region) for k, v in gw_ids.items()})
@@ -1073,6 +1107,9 @@ def ensure_runtime(ctrl, ac, gw_ids):
            # Applied Terraform boolean only; shell environment cannot enable this billed probe.
            "DEPLOYMENT_READINESS_ENABLED":
                "true" if ac.get("deployment_readiness_enabled") is True else "false",
+           # Applied Terraform boolean only; shell environment cannot enable cross-gateway handoff.
+           "CHAT_SECTION_HANDOFF_ENABLED":
+               "true" if ac.get("chat_section_handoff_enabled") is True else "false",
            # Dark-path chat loop (ADR-008 amended / BASELINE §2) — default OFF. Set explicitly on the
            # runtime so it survives re-provisioning and is toggleable via the normal deploy path:
            # `ANTHROPIC_AGENT_LOOP_ENABLED=true make agentcore`.
@@ -1090,6 +1127,23 @@ def ensure_runtime(ctrl, ac, gw_ids):
            # Where agent.py reads the datasource kind-mirror credentials for the stdio path (same
            # single integrations secret the connector lambdas use).
            "INTEGRATIONS_SECRET_NAME": f"ops/{ac.get('project', 'awsops-v2')}/integrations/credentials"}
+    # Terraform var.model_provider role env (models.tf output agentcore.model_env); absent = mixed,
+    # i.e. the agent's code defaults. Only the known keys with plain model-ID/secret-ARN values pass.
+    env.update(runtime_model_env(ac.get("model_env")))
+    # Durable chat model: only the applied Terraform value (agentcore.model_env from var.model_provider
+    # or var.agentcore_chat_model_id) reaches the runtime, so every provisioning run — CI included —
+    # writes the same model. The deployer's shell cannot change it. A value outside the reviewed
+    # allowlist refuses the runtime update.
+    model_env = ac.get("model_env") if isinstance(ac.get("model_env"), dict) else {}
+    agent_model = model_env.get("AGENT_MODEL_ID", "")
+    if agent_model:
+        if not isinstance(agent_model, str) or agent_model not in AGENT_MODEL_IDS:
+            log("runtime", "ERR", "agentcore.model_env AGENT_MODEL_ID is not a reviewed chat model; runtime not updated")
+            return ""
+        env["AGENT_MODEL_ID"] = agent_model
+    else:
+        env.pop("AGENT_MODEL_ID", None)  # blank keeps agent.py's default rather than an empty env
+    log("runtime", "OK", f"chat model {agent_model or 'default (global.openai.gpt-6-luna)'}")
     # Same fail-closed contract as the readiness poll below (review MINOR, codex/L3): this listing
     # used to sit outside the try (which only catches ClientError), so any exception here crashed
     # main() BEFORE ensure_mcp_server_targets ran — blocking the teardown pass for the run.

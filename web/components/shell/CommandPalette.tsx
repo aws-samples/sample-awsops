@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Search } from 'lucide-react';
+import { isComposingKey } from '@/lib/ime';
 import { INVENTORY_TYPES, inventoryGroups, overviewGroups } from '@/lib/inventory-types';
 import Input from '@/components/ui/Input';
 import { useI18n } from '@/components/shell/LanguageProvider';
@@ -88,6 +89,7 @@ export default function CommandPalette() {
   if (!open) return null;
 
   function onListKey(e: React.KeyboardEvent) {
+    if (isComposingKey(e)) return;
     if (e.key === 'Escape') {
       e.preventDefault();
       close();

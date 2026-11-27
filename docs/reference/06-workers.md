@@ -8,18 +8,23 @@ affecting web availability. P2 shipped the backbone with a synthetic proof workl
 `noop-heavy`); it now also carries real read/compute-only workloads — diagnosis report
 rendering (`report`) and CIS compliance scans (`compliance`) — enqueued through their own
 ownership-scoped routes (`POST /api/diagnosis`, `POST /api/compliance/run`). Every job type on
-this backbone is read-only / computation-only and never mutates AWS resources; AWS-resource
-mutation stays FROZEN per ADR-005 (do-not-enable) — any future async work stays within this
-same read-only substrate, not an escalation path for mutating actions.
+this backbone is read-only / computation-only except the gated `connector_target_sync` job, which
+only creates or updates this stack's own AgentCore gateway targets (it never deletes, and writes
+only the two awsops gateways whose role is this stack's AgentCore role) under the ADR-005
+owner-override exception ADR-023 (2026-11-05). Mutation of observed workloads and every
+other AWS resource stays FROZEN per ADR-005 (do-not-enable), and this backbone is not an
+escalation path for other mutating actions.
 
 **KO** — 무겁거나 오래 걸리거나 OOM 위험이 있는 작업을 web 요청 경로에서 떼어내는 관리형 비동기
 백본. web은 thin BFF로 유지되고, 워커가 OOM·행·크래시로 죽어도 web 가용성은 무영향. P2는 백본 +
 합성 증명 워크로드(`noop`/`noop-heavy`)로 시작했고, 현재는 실제 read/compute-only 작업도 이 위에서
 돈다 — 진단 리포트 렌더링(`report`)과 CIS 컴플라이언스 스캔(`compliance`)이 각자의 소유권-스코프
 전용 라우트(`POST /api/diagnosis`, `POST /api/compliance/run`)로 enqueue된다. 이 백본의 모든 job
-타입은 read-only/계산 전용이며 AWS 리소스를 변경하지 않는다 — AWS 리소스 변경은 ADR-005에 따라
-영구 동결(FROZEN, do-not-enable)이며, 향후 추가되는 비동기 작업도 같은 read-only substrate 안에
-머문다(mutate 작업으로 가는 확장 경로가 아니다).
+타입은 read-only/계산 전용이다 — 단, 게이트된 `connector_target_sync` job만 예외로, ADR-005
+owner-override 예외 ADR-023(2026-11-05)에 따라 이 스택 자신의 AgentCore gateway target을
+생성·갱신만 한다(삭제하지 않으며, role이 이 스택의 AgentCore role인 awsops gateway 두 개에만 쓴다).
+관측 대상 워크로드와 그 밖의 모든 AWS 리소스 변경은 ADR-005에 따라 계속 동결(FROZEN,
+do-not-enable)이며, 이 백본은 다른 mutate 작업으로 가는 확장 경로가 아니다.
 
 ## Development release proof
 
@@ -48,11 +53,20 @@ web POST /api/jobs (noop/noop-heavy only), POST /api/diagnosis, POST /api/compli
 `compliance`: those trust a client-supplied `report_id`/`run_id`/`requested_by` with no ownership
 check — pentest-remediation, PR #195). Diagnosis reports go through `POST /api/diagnosis` and
 compliance scans through `POST /api/compliance/run`, both of which call the same `lib/jobs.ts`
-`enqueueJob()` used by `/api/jobs`, computing `requestedBy` server-side. Whichever route calls it,
+`enqueueJob()` used by `/api/jobs`, computing `requestedBy` server-side. (The report's per-section
+evidence contract and `partial` rules are in
+[Diagnosis evaluation](../guides/diagnosis-evaluation.md#section-evidence-and-root-cause-contract).)
+The optional six-pillar discovery loop, DNS/NFM source gates, measured-memory
+qualification and account boundaries are in
+[Diagnosis discovery](diagnosis-discovery.md).
+Whichever route calls it,
 `enqueueJob()` writes the durable ledger row first (source of truth), then best-effort
 SQS send. The dispatcher Lambda runs outside the VPC (reaches SQS/SFN APIs directly), validates
-the job type against the `handlers.py` registry (read/compute only — mutate/unknown rejected per
-ADR-005), and calls `StartExecution(name=job_id)` — the execution name gives transport-level
+the job type against the `handlers.py` registry (its read/compute types plus the single
+ADR-023 exception job `connector_target_sync`, whose registry entry is unconditional — the gating
+lives in Terraform, which adds the worker env and an invoke-only grant on the dedicated
+`<project>-connector-target-sync` function (which holds the gateway grant on its own role) only when
+`connector_target_sync_enabled`, plus the job's own env check; unknown types rejected per ADR-005), and calls `StartExecution(name=job_id)` — the execution name gives transport-level
 idempotency (`ExecutionAlreadyExists` is treated as success). Step Functions Standard routes on
 `$.runtime`: a `RunLambda` state for short jobs, or `ecs:runTask.sync` Fargate for long/OOM-risk
 jobs. The worker claims `running` and writes `succeeded` itself. Because SFN cannot issue SQL to
@@ -67,7 +81,9 @@ pentest-remediation PR #195). 진단 리포트는 `POST /api/diagnosis`, 컴플�
 `POST /api/compliance/run`을 통하며, 둘 다 `/api/jobs`와 동일한 `lib/jobs.ts`의 `enqueueJob()`을
 호출하고 `requestedBy`는 서버 측에서 계산한다. 어느 라우트를 거치든 `enqueueJob()`이 내구성 있는
 ledger 행을 먼저 쓰고(권위), 그 다음 best-effort SQS send. 디스패처 Lambda는 VPC 밖에서 동작(SQS/SFN API 직접 접근)하고 `handlers.py` 레지스트리로 타입을
-검증(read/compute만 — mutate/unknown 거부, ADR-005)한 뒤 `StartExecution(name=job_id)` 호출 —
+검증(레지스트리의 read/compute 타입과 단일 ADR-023 예외 job `connector_target_sync`만 허용 — 이 job의
+레지스트리 항목 자체는 무조건 등록되며, 게이트는 Terraform(`connector_target_sync_enabled`일 때만 worker
+env와 전용 `<project>-connector-target-sync` 함수에 대한 invoke 전용 권한 추가 — gateway 권한은 그 함수의 자체 role이 보유)과 job 자체의 env 검사에 있다; unknown 거부, ADR-005)한 뒤 `StartExecution(name=job_id)` 호출 —
 실행명이 transport 멱등을 제공(`ExecutionAlreadyExists`는 성공 처리). Step Functions Standard가
 `$.runtime`으로 라우팅: 짧은 잡은 `RunLambda`, 길거나 OOM 위험인 잡은 `ecs:runTask.sync` Fargate.
 워커가 직접 `running`을 claim하고 `succeeded`를 쓴다. SFN은 VPC-only Aurora에 직접 SQL을 못 쓰므로
@@ -75,20 +91,78 @@ ledger 행을 먼저 쓰고(권위), 그 다음 best-effort SQS send. 디스패�
 전이한다. reaper(EventBridge, 5분마다)가 고아 행을 보정. **모든 것이 `workers_enabled`로 게이트됨
 (기본 false → `terraform plan` = No changes, 유휴 $0).**
 
+
+### Diagnosis evidence core (default-off)
+
+`scripts/v2/workers/diagnosis/` contains a bounded discovery and evidence core:
+`discovery.py`, `evidence.py`, `budget.py`, `workload_identities.py`, `memory_metrics.py`,
+`scoped_clients.py`, and the DNS/NFM and supporting-source collectors `observations.py` and
+`supporting.py`, plus the optional managed providers in `managed_discovery.py`.
+`report.generate` routes to it (`loop.run`) only when
+`DIAGNOSIS_EVIDENCE_LOOP_ENABLED` is applied (`report.evidence_loop_enabled()`).
+`discovery.collect()` and `discovery.follow_up()` check the same flag again. The full
+contract is in [Diagnosis discovery](diagnosis-discovery.md).
+
+| Terraform variable (default) | Effect when enabled |
+|---|---|
+| `diagnosis_evidence_loop_enabled` (`false`, requires `workers_enabled`) | Sets the worker env `DIAGNOSIS_EVIDENCE_LOOP_ENABLED`, `DIAGNOSIS_HOST_ACCOUNT_ID` (the applied account), `GRAPH_REBUILD_INTERVAL_MINS`, `INVENTORY_STALE_AFTER_MINUTES`, `DIAGNOSIS_MEMBER_ROLE_ARNS`, `DIAGNOSIS_NETWORK_EVIDENCE_ENABLED` and `DIAGNOSIS_DNS_LOG_GROUP_ARNS`. Attaches the customer-managed policy `worker_diagnosis_evidence` to the Fargate task role: `compute-optimizer:GetEC2InstanceRecommendations`/`GetRDSDatabaseRecommendations` and `cloudwatch:ListMetrics`, conditioned on the runtime read regions (all known regions). |
+| `diagnosis_member_role_arns` (`[]`, requires the loop) | Adds `sts:AssumeRole` only on these foreign-account `AWSopsReadOnlyRole` ARNs, conditioned on the runtime read regions. ExternalId follows ADR-011: the worker sends the registered value (required for third-party accounts and enforced by their trust policy); a first-party registration has none and relies on the member trust policy pinning this worker task role ARN. Member reads also need an enabled account-registry row, and the assumed identity is verified before any service client is built. The dev plan guard (`scripts/v2/ci_runtime_policy.py`) accepts these foreign ARNs only in that `DiagnosisRegisteredMemberReadOnly` statement and the worker task's `DIAGNOSIS_MEMBER_ROLE_ARNS` value, only when they equal the variable, and only while the policy is attached solely to the worker task role; any other foreign ARN still fails the plan. |
+| `diagnosis_network_evidence_enabled` (`false`, requires the loop) | Attaches the customer-managed policy `worker_diagnosis_network`: Resolver query-log config listing, NFM monitor listing and top-contributor queries on host monitors, and `rds:DescribeDBProxies`/`DescribeDBProxyTargets`/`DescribeDBClusters`. |
+| `diagnosis_dns_log_group_arns` (`[]`) | Adds `logs:StartQuery` only on these host log groups, plus `logs:GetQueryResults`/`StopQuery`. |
+| `diagnosis_managed_discovery_enabled` (`false`, requires the loop) | Sets `DIAGNOSIS_MANAGED_DISCOVERY_ENABLED` and attaches the Fargate-only `worker_diagnosis_managed` policy for `application-signals:ListServices` and `ListServiceDependencies`, conditioned on runtime read regions. Existing instrumentation is required; no service is activated. |
+| `diagnosis_omni_spaces` (`{}`, reserved) | Must remain empty; Terraform rejects nonempty host and member maps. The worker has no Omni environment wiring or credential-vending permission. The private adapter remains inactive pending [verified IAM scope](diagnosis-discovery.md#managed-provider-activation-preflight). |
+
+The inventory/telemetry read grants are region-conditioned, and ADR-005 is unchanged.
+Omni credential vending is inactive: no `GetSpaceCredentialsForOrganization`
+permission or production adapter invocation is shipped. Application Signals uses
+only the verified host or registered member session. The NFM and Logs
+query actions only create and stop analysis queries. They never create monitors, logging or
+instrumentation. If `DIAGNOSIS_HOST_ACCOUNT_ID` is unset or malformed, both the host and the
+member paths fail closed (`untrusted_host_scope`).
+
+The bundle keeps the report's two kinds of gap apart
+([evaluation guide](../guides/diagnosis-evaluation.md)):
+
+- `incomplete` lists self-imposed bounds: caps such as `region_cap`, `inventory_cap` and
+  `proxy_query_cap`, and `discovery_deadline`. The bound itself is never recorded as a source
+  gap. When a bound leaves a specific identity unproven (a capped task attachment list), that
+  consequence is listed separately in `gaps` (`workload_address_unresolved`).
+- `gaps` lists evidence that could not be confirmed or read, including `proxy_not_available`
+  (an in-scope proxy that is not `available`). Examples are
+  `inventory_empty_not_confirmed` (zero inventory rows are not verified emptiness),
+  `proxy_configuration_unavailable` (a provider or credential error), `follow_up_rejected`
+  and `*_not_collected`.
+- `degraded` lists failed reads and projection defects, such as `inventory_read_failed`,
+  `task_projection_failed` and `proxy_projection_failed`.
+
+`configured_dependency` relationships, such as an RDS Proxy target, record configuration
+only. They never prove that an application calls the target.
+
+A model-proposed `observation` is kept only when code can confirm it. For one resource that
+means a cited, complete 14-day metrics row with the full measured pressure set (CPU, memory and
+I/O, plus replica lag for replicas). For a pair it means an exact observed edge. Anything else is
+downgraded to `hypothesis` (`unconfirmed_observation`). Model text is never parsed for meaning:
+reports print the admitted values, and numerals in model text are rejected.
+`EvidenceIndex.model_context()` is redacted by default; `raw_context()` is for code-side checks.
+
 ## Decisions (ADRs) / 결정
 
-- **[ADR-005 — AWS mutation & autonomy (FROZEN)](../decisions/005-aws-mutation-autonomy-frozen.md)** — P2
+- **ADR-005 — AWS mutation & autonomy (FROZEN)** — P2
   implements the *safety hooks* (idempotency token, kill-switch, mutate/unknown-type guard, dry-run
   pass-through) as a dark/inactive substrate for a potential future mutate-action registry — this is
   architecturally reserved, not an implicit escalation path. AWS-resource mutation stays FROZEN per
   ADR-005; turning any of this into live mutating operations (approval workflow, first-class rollback,
   the mutate-action registry itself) requires a new ADR decision, not just implementation work.
+  The only live exception on this backbone is the gated `connector_target_sync` job, an ADR-005
+  owner-override exception (ADR-023, 2026-11-05; see [05 AgentCore](05-agentcore.md)), which does not create a
+  general mutate-action registry.
   / P2가 구현한 안전 훅(멱등 토큰·킬스위치·mutate/unknown 타입 가드·dry-run 통과)은 향후 있을 수 있는
   mutate-action 레지스트리를 위해 architecturally 예약된 dark/inactive substrate일 뿐, 암묵적 확장
   경로가 아니다. AWS 리소스 변경은 ADR-005에 따라 계속 FROZEN이며, 이를 실제 mutate 작업(승인
   워크플로·1급 롤백·mutate-action 레지스트리 자체)으로 전환하려면 구현이 아니라 새 ADR 결정이
-  필요하다.
-- **[ADR-001 — v2 foundation (ECS/Fargate + Aurora split)](../decisions/001-v2-foundation.md)** — the job
+  필요하다(유일한 실동작 예외인 게이트된 `connector_target_sync` job — ADR-005 owner-override 예외 ADR-023(2026-11-05),
+  [05 AgentCore](05-agentcore.md) — 도 범용 mutate-action 레지스트리가 아니다).
+- **ADR-001 — v2 foundation (ECS/Fargate + Aurora split)** — the job
   ledger is the Aurora `worker_jobs` table (an infra table orthogonal to the 7 app-state tables); the
   worker_jobs row, not the SFN execution status, is the source of truth.
   / 잡 ledger는 Aurora `worker_jobs` 테이블(7개 app-state 테이블과 직교하는 인프라 테이블); 권위는

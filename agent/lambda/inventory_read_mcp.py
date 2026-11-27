@@ -3,7 +3,7 @@ Inventory-Read MCP Lambda — Aurora-backed, read-only topology & unused-resourc
 
 The v2 equivalent of v1's ops `run_steampipe_query`: instead of querying live Steampipe, it reads
 the inventory the Steampipe sync already materialized into Aurora (`inventory_resources` +
-`topology_nodes/edges`, ADR-043) and answers topology / unused-resource questions over it. This
+`topology_nodes/edges`, ADR-010[legacy 043]) and answers topology / unused-resource questions over it. This
 reconnects "the topology data we built in Aurora" to AgentCore — the bridge that was missing in v2.
 
 Tools (all read-only — SELECT only; no AWS mutation, no arbitrary SQL):
@@ -27,7 +27,7 @@ import re
 import time
 from datetime import datetime, timezone
 
-from cross_account import resolve_tool_name
+from cross_account import host_account_id, resolve_tool_name
 
 
 DEFAULT_INVENTORY_STALE_AFTER_MINUTES = 30
@@ -75,6 +75,10 @@ TRACE_TOPOLOGY_NOTE = (
     "account/region fallbacks. identityProvenance is always telemetry_claim, even when an ARN "
     "names the host; queues never bridge into inventory. Shared destination ARNs join across "
     "callers only within datasource/environment; the same ARN can have separate nodes in each scope."
+    " Runtime and requested-model identities are also telemetry claims, never inventory ownership "
+    "or proof of successful inference. Runtime qualifiers come only from a valid runtime ARN; "
+    "requested models have null account/region claims. A hosts edge is reported runtime context, "
+    "not a traced request. The requested model/endpoint does not prove the provider behind a Gateway."
 )
 
 MATERIALIZED_TOPOLOGY_NOTE = (
@@ -190,15 +194,33 @@ def build_topology_chain(by_type, root=None):
     return chains
 
 
+def _inference_claim_meta(kind, meta):
+    """Typed, bounded read projection; never trust stored ownership or provenance."""
+    fields = {"sourceId": 512, "environment": 512}
+    fields.update({"arn": 512} if kind == "runtime" else {"provider": 64, "model": 256, "endpoint": 253})
+    safe = {key: meta[key] for key, limit in fields.items()
+            if isinstance(meta.get(key), str) and len(meta[key]) <= limit}
+    port = meta.get("port")
+    if kind == "model" and type(port) in (int, float) and 1 <= port <= 65535 and port == int(port):
+        safe["port"] = port
+    arn = re.fullmatch(
+        r"arn:aws(?:-[a-z0-9-]+)?:bedrock-agentcore:([a-z]{2,8}(?:-[a-z0-9]+)+-\d+):(\d{12}):runtime/[A-Za-z0-9_][A-Za-z0-9_-]{0,255}",
+        safe.get("arn", ""),
+    ) if kind == "runtime" else None
+    return {**safe, "claimedAccountId": arn[2] if arn else None,
+            "claimedRegion": arn[1] if arn else None, "identityProvenance": "telemetry_claim"}
+
+
 def _fetch_topology_graph(resource_id=None, cls="flow", limit=500):
-    """Read the materialized topology graph from topology_nodes/edges (ADR-043).
+    """Read the materialized topology graph from topology_nodes/edges (ADR-010[legacy 043]).
 
     Matches the /api/graph contract:
       nodes = [{id, kind, label, meta}]
       edges = [{source, target, rel, confidence, meta?}] (trace meta: spanCount/metricCount)
 
-    Resolve an exact canonical ID first, then an exact raw ID (everything after the first
-    colon). The sanitized reader view deliberately omits meta.resourceId. Ambiguous raw IDs
+    Resolve an exact canonical ID first, then a legacy kind-prefixed or raw ID.
+    Scoped placement IDs carry @account:region before the raw ID. The sanitized
+    reader view deliberately omits meta.resourceId. Ambiguous compatibility IDs
     never select a graph. Select the root and its one-hop neighbours BEFORE limiting nodes.
     Return (nodes, edges, selection/truncation metadata); collection evidence belongs to
     the caller. Limits describe this response, not source collection completeness.
@@ -221,7 +243,9 @@ def _fetch_topology_graph(resource_id=None, cls="flow", limit=500):
         if not matches:
             matches = _execute(
                 "SELECT id FROM topology_nodes WHERE account_id = 'self' AND class = :cls "
-                "AND strpos(id, ':') > 0 AND substring(id FROM strpos(id, ':') + 1) = :rid "
+                "AND strpos(id, ':') > 0 AND (substring(id FROM strpos(id, ':') + 1) = :rid "
+                "OR regexp_replace(id, '^[^:]+:@(self|[0-9]{12}):[a-z0-9-]+:', '') = :rid "
+                "OR regexp_replace(id, '^([^:]+):@(self|[0-9]{12}):[a-z0-9-]+:', '\\1:') = :rid) "
                 "ORDER BY id LIMIT :match_limit",
                 params=resolve_params + [{"name": "match_limit", "value": {"longValue": 3}}])
             matched_by = "raw"
@@ -309,6 +333,9 @@ def _fetch_topology_graph(resource_id=None, cls="flow", limit=500):
               "meta": _parse_meta(r.get("meta"))} for r in node_rows if r.get("id")]
     if cls == "trace":
         for node in nodes:
+            if node["kind"] in ("runtime", "model"):
+                node["meta"] = _inference_claim_meta(node["kind"], node["meta"])
+                continue
             if node["kind"] != "queue":
                 continue
             meta = node["meta"].copy()
@@ -442,7 +469,7 @@ def _inventory_graph_collection(cls):
 _execute_override = None  # tests may inject a fake (sql, params) -> [row-dict]
 
 
-def _execute(sql, params=None):
+def _execute(sql, params=None, *, topology=False):
     """Run read-only SQL through the RDS Data API; return rows as dicts (formatRecordsAs=JSON)."""
     if _execute_override:
         return _execute_override(sql, params)
@@ -450,7 +477,7 @@ def _execute(sql, params=None):
     client = boto3.client("rds-data", region_name=os.environ.get("AWS_REGION", "ap-northeast-2"))
     kwargs = {
         "resourceArn": os.environ["AURORA_CLUSTER_ARN"],
-        "secretArn": os.environ["AURORA_SECRET_ARN"],
+        "secretArn": os.environ["TOPOLOGY_READER_SECRET_ARN" if topology else "AURORA_SECRET_ARN"],
         "database": os.environ.get("AURORA_DATABASE", "awsops"),
         "sql": sql,
         "formatRecordsAs": "JSON",
@@ -473,7 +500,7 @@ PROJECTIONS = {
     "target_group": ["target_group_arn", "target_group_name", "load_balancer_arns", "target_health_descriptions"],
     "alb": ["name", "dns_name", "arn"],
     "nlb": ["name", "dns_name", "arn"],
-    # `origins` IS present, but the sql_reader view (migration 01KYVY9J…) projects each element down
+    # `origins` IS present, but the sql_reader view (created by 01KYVY9J…, now owned by 01M4QQE7…) projects each element down
     # to `{DomainName}` only — detect_unused()/build_topology_chain() read nothing else off an origin
     # object (grepped). A prior revision dropped the key entirely to keep CustomHeaders[].HeaderValue
     # (an origin secret) out, which silently disabled the "CloudFront (empty origin)" high-severity
@@ -481,6 +508,11 @@ PROJECTIONS = {
     # the leak, so the key belongs back on this list.
     "cloudfront": ["id", "domain_name", "enabled", "origins", "aliases"],
     "ebs": ["volume_id", "state", "size", "volume_type"],
+    # Power state lets the model answer "which instances are stopped"; the view (migration
+    # 01M4QQE7…) names exactly these keys; the view allowlist is one list shared by every type, so a
+    # future producer alias matching one of its names would widen that type too. state_transition_time
+    # is null for running instances (EC2 sets it for stopped/terminated ones).
+    "ec2": ["instance_id", "name", "instance_type", "instance_state", "state_transition_time"],
 }
 
 
@@ -488,7 +520,7 @@ def _projected_select(rtype):
     """Column expression for a type's inventory payload.
 
     Reads run as `awsops_sql_reader`, whose sql_reader.inventory_resources view exposes `data` as a
-    NAMED-KEY PROJECTION (migration 01KYVY9J…, INVARIANT rule 5) — raw provider payloads are not
+    NAMED-KEY PROJECTION (created by migration 01KYVY9J…, now owned by 01M4QQE7…; INVARIANT rule 5) — raw provider payloads are not
     reachable, so any key not on that allowlist comes back absent, not denied. Selecting `data`
     unqualified is therefore safe here AND under the exec role, and asking for a specific key that
     the view drops simply yields null rather than an error.
@@ -530,7 +562,10 @@ def _fetch_one_type(rtype, limit, resource_id=None):
     surfaces so nothing downstream mistakes a partial object for a complete one.
     """
     params = [{"name": "rt", "value": {"stringValue": rtype}}]
-    predicate, projection = "", _projected_select(rtype)
+    # The row's own region column rides along so a model can filter by region instead of guessing
+    # from name prefixes; it wins over any same-named payload key (CloudFront reports "global").
+    predicate = ""
+    projection = "COALESCE(" + _projected_select(rtype) + ", '{}'::jsonb) || jsonb_build_object('region', region)"
     if resource_id is not None:
         predicate = " AND resource_id = :rid"
         params.append({"name": "rid", "value": {"stringValue": resource_id}})
@@ -634,7 +669,28 @@ def _freshness_for_type(resource_type):
 
 
 # ── Tool dispatch ─────────────────────────────────────────────────────────────────────────────────
-def _ok(body):
+def _scope(requested_account_id):
+    """Which account this response describes. Reads are always host-scoped (account_id='self');
+    when the caller asked about another account, say plainly that this is NOT that account's data,
+    so a chat about a member account never presents host inventory as the member's."""
+    scope = {"account": "host", "inventory_key": "self"}
+    requested = str(requested_account_id or "").strip()
+    if not requested or requested in ("self", "__all__") or requested == (host_account_id() or ""):
+        return scope, None
+    if not re.fullmatch(r"\d{12}", requested):
+        requested = "an unrecognized account"  # never echo arbitrary model-supplied text
+    scope.update(requested_account_id=requested, requested_account_served=False)
+    warning = (f"This is HOST-account inventory, not {requested if requested.startswith('an ') else 'account ' + requested}: the synced inventory tools "
+               f"read the host account only. Do not attribute these results to {requested}; use the "
+               f"live describe/list tools for that account.")
+    return scope, warning
+
+
+def _ok(body, scope=None, scope_warning=None):
+    if scope is not None and isinstance(body, dict):
+        body["scope"] = scope
+        if scope_warning:
+            body["warning"] = " ".join(filter(None, [scope_warning, body.get("warning")]))
     return {"statusCode": 200, "body": json.dumps(body, default=str)}
 
 
@@ -643,8 +699,13 @@ def lambda_handler(event, context):
     params = event if isinstance(event, dict) else json.loads(event)
     tool_name = resolve_tool_name(params, context)
     arguments = params.get("arguments", params)
+    requested_account_id = None
     if isinstance(arguments, dict):
-        arguments.pop("target_account_id", None)  # single-account; accept-and-ignore
+        # Reads stay host-scoped (never the requested account); the response says so via `scope`.
+        requested_account_id = arguments.pop("target_account_id", None)
+    service_projection = (tool_name == "get_topology" and isinstance(arguments, dict)
+                          and arguments.get("class") == "service")
+    scope, scope_warning = (None, None) if service_projection else _scope(requested_account_id)
 
     if tool_name in ("find_unused_resources", ""):
         by_type = _fetch_by_type(["target_group", "alb", "nlb", "cloudfront", "ebs"])
@@ -652,7 +713,7 @@ def lambda_handler(event, context):
         category = arguments.get("category") if isinstance(arguments, dict) else None
         if category:
             findings = [f for f in findings if category.lower() in f["category"].lower()]
-        return _ok({"findings": findings, "count": len(findings), "note": COVERAGE_NOTE})
+        return _ok({"findings": findings, "count": len(findings), "note": COVERAGE_NOTE}, scope, scope_warning)
 
     if tool_name == "get_topology":
         resource_id = arguments.get("resource_id") if isinstance(arguments, dict) else None
@@ -664,6 +725,56 @@ def lambda_handler(event, context):
         if resource_id is not None:
             resource_id = resource_id.strip()
         cls = (arguments.get("class") or "flow") if isinstance(arguments, dict) else "flow"
+        if cls == "service":
+            if os.environ.get("TOPOLOGY_ENTITIES_ENABLED") != "true":
+                return {"statusCode": 404, "body": json.dumps({"error": "topology_entities_disabled", "class": "service"})}
+            if requested_account_id not in (None, "", "self") and (
+                not isinstance(requested_account_id, str) or not re.fullmatch(r"\d{12}", requested_account_id)
+                or requested_account_id != host_account_id()
+            ):
+                return {"statusCode": 422, "body": json.dumps({"error": "unsupported_scope"})}
+            if resource_id and not re.fullmatch(r"[0-9a-f]{64}", resource_id):
+                return {"statusCode": 400, "body": json.dumps({"error": "invalid_entity_id"})}
+            try:
+                cadence = int(os.environ.get("GRAPH_REBUILD_INTERVAL_MINS", "0"))
+            except ValueError:
+                cadence = 0
+            try:
+                rows = _execute(
+                    # One MVCC read. Keep each Data API row comfortably below 64 KiB, even
+                    # for four-byte Unicode. Bound the complete formatted response as well.
+                    "WITH authority AS MATERIALIZED (SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_roles r "
+                    "WHERE r.rolname=current_user AND current_user=session_user AND session_user='awsops_topology_reader' "
+                    "AND r.rolcanlogin AND NOT (r.rolsuper OR r.rolcreaterole OR r.rolcreatedb OR r.rolreplication "
+                    "OR r.rolbypassrls OR EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.member=r.oid)) "
+                    "AND NOT pg_catalog.pg_has_role('awsops_sql_reader',r.oid,'MEMBER')) AS ok), "
+                    "result AS MATERIALIZED (SELECT ok,CASE WHEN ok THEN sql_reader.service_topology_read("
+                    "NULL,'service','',:focus,0,CAST(:age AS integer))::text END AS doc FROM authority) "
+                    "SELECT NOT ok AS denied, CASE WHEN ok AND octet_length(to_json(doc)::text)<=524288 THEN substr(doc,n,4096) END AS view, "
+                    "(octet_length(to_json(doc)::text)>524288) AS oversized FROM result "
+                    "CROSS JOIN LATERAL generate_series(1,CASE WHEN NOT ok OR octet_length(to_json(doc)::text)>524288 THEN 1 "
+                    "ELSE length(doc) END,4096) n ORDER BY n",
+                    [{"name": "focus", "value": {"stringValue": resource_id or ""}},
+                     {"name": "age", "value": {"longValue": min(2880, max(15, cadence * 2))}}], topology=True)
+                if rows and rows[0].get("denied"):
+                    print("service_topology_read_failed: credential_identity")
+                    return {"statusCode": 503, "body": json.dumps({"error": "read_unavailable"})}
+                if rows and rows[0].get("oversized"):
+                    return {"statusCode": 413, "body": json.dumps({
+                        "error": "service_projection_too_large", "hint": "Select an exact service entity ID."})}
+                view = json.loads("".join(row["view"] for row in rows)) if rows else {
+                    "contractVersion": 1, "status": "unavailable", "snapshotId": None, "reason": "no_publication"}
+                if view.get("snapshotId") and not view.get("entities"):
+                    view["warning"] = "An empty selection does not establish absence of services or healthy collection. Inspect selection, sources and gaps."
+                return _ok(view)
+            except Exception as error:
+                provider_code = getattr(error, "response", {}).get("Error", {}).get("Code")
+                allowed = {"AccessDeniedException", "DatabaseErrorException", "SecretsErrorException",
+                           "DatabaseUnavailableException", "StatementTimeoutException"}
+                diagnostic = provider_code if provider_code in allowed else (
+                    "invalid_response" if isinstance(error, (ValueError, TypeError)) else "upstream_error")
+                print("service_topology_read_failed: " + diagnostic)
+                return {"statusCode": 503, "body": json.dumps({"error": "read_unavailable"})}
         if cls not in ("flow", "infra", "trace"):
             # Reject unknown class (400) — do NOT silently coerce to 'flow'. The /api/graph BFF returns
             # 400 for the same input; a direct-MCP caller must get an error, not the WRONG layer's data
@@ -707,7 +818,7 @@ def lambda_handler(event, context):
             selection_warning = "Topology response is truncated; inspect truncation before inferring full coverage."
         if selection_warning:
             result["warning"] = " ".join(filter(None, [result.get("warning"), selection_warning]))
-        return _ok(result)
+        return _ok(result, scope, scope_warning)
 
     if tool_name == "query_inventory":
         rtype = arguments.get("resource_type") if isinstance(arguments, dict) else None
@@ -744,9 +855,9 @@ def lambda_handler(event, context):
                 f"coincidence) — use inventory_summary/find_unused_resources/get_topology, or the "
                 f"AWS describe_* tools, for this type's full detail."
             )
-        return _ok(result)
+        return _ok(result, scope, scope_warning)
 
     if tool_name == "inventory_summary":
-        return _ok({"sync": _sync_freshness(), "note": COVERAGE_NOTE})
+        return _ok({"sync": _sync_freshness(), "note": COVERAGE_NOTE}, scope, scope_warning)
 
     return {"statusCode": 400, "body": json.dumps({"error": "Unknown tool: " + str(tool_name)})}

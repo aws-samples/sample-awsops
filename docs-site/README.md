@@ -2,6 +2,8 @@
 
 This website is built using [Docusaurus](https://docusaurus.io/), a modern static website generator.
 
+For authenticated screenshot generation, see [capture configuration and credential handling](scripts/CAPTURE.md).
+
 ## Installation
 
 ```bash
@@ -26,7 +28,7 @@ This command generates static content into the `build` directory and can be serv
 
 ## Dependency validation
 
-Use Node.js 20 or later and npm so `package-lock.json` and the security overrides
+Use Node.js 26 (`engines`: `>=26.13.0 <27`) and npm so `package-lock.json` and the security overrides
 in `package.json` are applied. The presentation check uses the Linux tools available
 in CI: Bash, GNU coreutils/grep/sed, unzip and Python 3. For dependency updates, run:
 

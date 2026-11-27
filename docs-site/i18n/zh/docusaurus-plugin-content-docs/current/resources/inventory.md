@@ -52,7 +52,7 @@ import Screenshot from '@site/src/components/Screenshot';
 :::
 
 :::info 只读采集
-**Refresh** 仅重新读取最新状态，不会变更资源。AWSops 只对 AWS 资源进行观察和诊断，不做任何变更。采集时刻以 KST（Asia/Seoul）为准显示。
+**Refresh** 仅重新读取最新状态，不会变更资源。资源清单采集只观察 AWS 资源，不做任何变更。采集时刻以 KST（Asia/Seoul）为准显示。
 :::
 
 :::tip 移动端

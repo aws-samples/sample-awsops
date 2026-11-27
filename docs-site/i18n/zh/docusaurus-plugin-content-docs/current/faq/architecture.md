@@ -9,7 +9,7 @@ description: 面向 SRE/架构师的 AWSops 内部架构（边缘、异步 Worke
 这是关于 AWSops 内部工作原理的深入技术 FAQ。从 SRE 和架构师的视角，涵盖边缘路径、异步 Worker 骨干、数据层、AI 路由、认证以及运维中的经验教训。
 
 :::info 只读运维仪表盘
-AWSops 是一个**只读（read-only）运维仪表盘 + AI 诊断**工具。**AWS 资源变更与自主执行（autonomy）已永久冻结。**允许读取外部可观测性数据，以及受治理约束的外部记录/工单/消息写入（数据记录），但不会更改 AWS 资源本身。
+AWSops 是一个**只读（read-only）运维仪表盘 + AI 诊断**工具。**AWS 资源变更与自主执行（autonomy）已冻结**，唯一的例外是两项经所有者批准、默认关闭的操作（重启自身的 Web 服务，以及在自身的 AgentCore 网关上注册连接器目标）。允许读取外部可观测性数据，以及受治理约束的外部记录/工单/消息写入（数据记录），但不会更改 AWS 资源本身。
 :::
 
 ## 边缘（CloudFront → VPC Origin → 内部 ALB → Fargate）是如何构成的？
@@ -116,19 +116,19 @@ AWSops 的实时 AWS 数据由 **AgentCore MCP Lambda 工具**负责。约 **160
 | **AgentCore MCP 工具（实时）** | 实时 AWS API 查询 — 聊天、诊断、页面的实时数据来源 |
 | **Steampipe（flag-gated）** | 仅用于 `steampipe_enabled`（默认 OFF）的清单同步。既不是实时查询引擎，也不是本地 9193 服务 |
 
-:::info 网关数量是 9 个（ADR-004 修订，2026-06-24）
-外部可观测性连接器（Prometheus·ClickHouse）已提升为 **external-obs 网关**，作为第九个被配置并参与路由（ADR-004 修订 — 9 配置 / 9 路由）。其余外部集成属于独立的 **Integrations 轴**（ADR-007/017）。
+:::info 网关数量是 9 个
+外部可观测性连接器（Prometheus·ClickHouse）已提升为 **external-obs 网关**，作为第九个被配置并参与路由（9 配置 / 9 路由）。其余外部集成属于独立的 **Integrations 轴**。
 :::
 
-## AI 路由是如何工作的？（ADR-038 混合方式）
+## AI 路由是如何工作的？（混合方式）
 
-AI 路由采用 **ADR-038 混合**方式，已 LIVE。它取代了 v1 的 Sonnet 单一分类器 11/18-route 注册表。
+AI 路由采用 **混合**方式，已 LIVE。它取代了 v1 的 Sonnet 单一分类器 11/18-route 注册表。
 
 ```mermaid
 flowchart TD
   Q["用户问题"] --> REGEX{"正则<br/>fast-path 匹配？"}
   REGEX -->|"匹配"| ROUTE["立即确定分区路由<br/>（无 LLM 调用）"]
-  REGEX -->|"未匹配"| HAIKU["Haiku 4.5 分类器<br/>（提示词缓存）"]
+  REGEX -->|"未匹配"| HAIKU["Haiku 级分类器<br/>（提示词缓存）"]
   HAIKU --> ROUTE
   ROUTE --> AGENT["分区代理<br/>（AgentCore Runtime → 8 GW）"]
 ```
@@ -136,8 +136,8 @@ flowchart TD
 ### 3 个核心机制
 
 1. **正则 fast-path** — 明确的关键词模式无需 LLM 调用即可立即路由 → 降低延迟。
-2. **Haiku 4.5 分类器** — 仅对 fast-path 未捕获的问题使用轻量的 Haiku 模型分类。
-3. **提示词缓存** — 缓存分类提示词（命中率约 59%），减少 token 消耗与延迟。
+2. **Haiku 级分类器** — 仅对 fast-path 未捕获的问题使用轻量的 Haiku 模型分类。
+3. **提示词缓存** — 仅 Claude 路径使用显式缓存点减少 token 消耗与延迟（不适用于 GPT-6 Luna 聊天）。
 
 ### AI 助手行为
 
@@ -164,11 +164,11 @@ flowchart LR
 
 ### 逐步详情
 
-**1. Lambda@Edge（us-east-1，python3.12，Viewer Request）**
+**1. Lambda@Edge（us-east-1，python3.14，Viewer Request）**
 - 对每个请求都通过 **RS256 JWKS 签名校验** `awsops_token` Cookie 中的 JWT，并检查 `iss`/`aud`/`token_use`。
 - 未认证则重定向到自托管的 **`/login`** 表单。
 
-**2. 应用内登录（ADR-042）**
+**2. 应用内登录**
 - 登录 = **自托管 `/login` 表单**。BFF 的 `POST /api/auth/login` 调用**无签名的公开 `InitiateAuth(USER_PASSWORD_AUTH)`**（不使用 SDK）→ 签发 `awsops_token` Cookie（id_token 12 小时）。
 - **Hosted UI PKCE 流程（`/_callback`）仅作为暗备份（dark fallback）**保留。
 - signout 为删除 Cookie → `/login`（无 Hosted UI `/logout` 往返）。

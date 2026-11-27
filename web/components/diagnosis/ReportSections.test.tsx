@@ -66,8 +66,19 @@ describe('sectionSeverity', () => {
   it('a degraded/failed section body never reads green', () => {
     expect(sectionSeverity('_이 섹션 생성에 실패했습니다 (degraded): boom_')).toBe('warning');
   });
+  it.each([
+    '검증된 진단 없음; 커버리지는 미확인입니다.',
+    'No admitted findings; coverage remains unknown.',
+    '没有已验证的诊断；覆盖情况仍未知。',
+    '検証済み診断なし。カバレッジは未確認です。',
+  ])('does not mark an unassessed evidence section green: %s', (body) => {
+    expect(sectionSeverity(body, 'Security Posture')).toBe('info');
+  });
   it('keeps explicit information neutral rather than displaying an assessed pass', () => {
     expect(sectionSeverity('[Info]\nNo active invariants. No assessment was performed.', 'Intended vs Actual')).toBe('info');
+    for (const title of ['현재 아키텍처', 'Current architecture', '現在のアーキテクチャ', '当前架构']) {
+      expect(sectionSeverity('[Info]\nInventory', title)).toBe('info');
+    }
     expect(sectionSeverity('[Info] note\n[Warning] failed invariant')).toBe('warning');
     expect(sectionSeverity('[Info] note\n[Critical] failed invariant')).toBe('critical');
   });
@@ -99,4 +110,12 @@ describe('ReportSections', () => {
     expect(screen.getByText('본문뿐')).toBeTruthy();
     expect(screen.queryByText('모두 접기')).toBeNull();
   });
+});
+
+it('opens the assessment first and exposes the evidence ledger on demand', () => {
+  render(<ReportSections markdown={'- [근거 부록](#evidence_appendix)\n\n## 진단 의견\n\n진단 본문\n\n## 근거 부록\n\n추적용 근거'} />);
+  expect(screen.getByText('진단 본문')).toBeTruthy();
+  expect(screen.queryByText('추적용 근거')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: /근거 부록/, expanded: false }));
+  expect(screen.getByText('추적용 근거')).toBeTruthy();
 });

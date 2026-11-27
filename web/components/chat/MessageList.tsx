@@ -41,16 +41,21 @@ export interface RankedChip { key: string; score: number; active: boolean }
 export interface QueryPreview { tool: string; query: string }
 export interface Msg {
   role: 'user' | 'assistant'; content: string; gateway?: string; streaming?: boolean;
-  ranked?: RankedChip[]; method?: string; // ADR-038 meta
-  via?: string; // ADR-044 meta: 'multi:network+data' when the answer is a cross-domain synthesis
+  ranked?: RankedChip[]; method?: string; // ADR-003[legacy 038] meta
+  via?: string; // ADR-003[legacy 044] meta: 'multi:network+data' when the answer is a cross-domain synthesis
   status?: { phase: string; elapsedMs?: number; tool?: string; query?: string };
   // Answer-provenance footer (design handoff 개선안 ③): known only after the invoke resolves,
   // so these arrive on a second `meta` frame — absent against a legacy agent image.
   tools?: string[]; model?: string; elapsedMs?: number;
+  // Cross-gateway handoff provenance: canonical section keys the answer used, in use order.
+  gateways?: string[];
   // v1-parity footer extras (2026-07-19): per-answer token usage + estimated USD (agent must
   // report usage AND a priced model), and the generated queries surfaced during the run.
   usage?: { inputTokens: number; outputTokens: number }; costUsd?: number;
   queries?: QueryPreview[];
+  // Account the turn was answered for ('host' | 12-digit id), from the server meta frame — sent back
+  // with history so the agent can tell earlier answers about another account apart.
+  account?: string;
 }
 
 function fmtCost(usd: number): string {
@@ -73,10 +78,6 @@ function statusLabel(s: { phase: string; elapsedMs?: number }, tt: (s: string) =
   }
 }
 
-// Mirrors agent.py's MODEL_ID label for the (rare) legacy-image case where the stream carries
-// no `{"model": ...}` provenance frame — never shown once a redeployed agent reports its own.
-const FALLBACK_MODEL_LABEL = 'Claude Sonnet 4.6';
-
 export default function MessageList({ msgs, onSwitch, onFollowUp }: { msgs: Msg[]; onSwitch?: (key: string) => void; onFollowUp?: (q: string) => void }) {
   const { tt } = useI18n();
   return (
@@ -84,10 +85,10 @@ export default function MessageList({ msgs, onSwitch, onFollowUp }: { msgs: Msg[
       {msgs.map((m, i) => {
         const sec = m.gateway ? sectionByKey(m.gateway) : null;
         const me = m.role === 'user';
-        // ADR-044: a cross-domain synthesis answer — the keys merged into this one answer.
+        // ADR-003[legacy 044]: a cross-domain synthesis answer — the keys merged into this one answer.
         const viaKeys = (!me && m.via?.startsWith('multi:')) ? m.via.slice(6).split('+').filter(Boolean) : null;
         const viaSet = new Set(viaKeys ?? []);
-        // ADR-038/044: active alternates the answer did NOT already cover — a SECONDARY manual aid
+        // ADR-003[legacy 038]: active alternates the answer did NOT already cover — a SECONDARY manual aid
         // (cross-domain is handled automatically by synthesis), shown once streaming ends.
         const alts = (!me && !m.streaming && m.ranked)
           ? m.ranked.filter((r) => r.active && r.key !== m.gateway && !viaSet.has(r.key)).slice(0, 2)
@@ -139,7 +140,7 @@ export default function MessageList({ msgs, onSwitch, onFollowUp }: { msgs: Msg[
                   : null)
                 : m.streaming
                   ? <StreamingMarkdown content={m.content} />
-                  : <Markdown>{m.content}</Markdown>}
+                  : <Markdown visualizeTables>{m.content}</Markdown>}
             {m.streaming && (!m.content && m.status ? null : <span className="ml-0.5 inline-block h-3 w-[6px] translate-y-0.5 animate-pulse bg-brand-500 align-middle" />)}
             {!me && !m.streaming && sec && (
               <div className="mt-3 border-t border-ink-100 pt-2.5">
@@ -147,7 +148,7 @@ export default function MessageList({ msgs, onSwitch, onFollowUp }: { msgs: Msg[
                   <span className="rounded-md border border-brand-200 bg-brand-50 px-2 py-0.5 font-mono text-[11px] font-semibold text-brand-700">
                     AgentCore → {sec.label} Gateway
                   </span>
-                  <span className="font-mono text-[11px] text-ink-500">{m.model ?? FALLBACK_MODEL_LABEL}</span>
+                  {m.model && <span className="font-mono text-[11px] text-ink-500">{m.model}</span>}
                   {m.elapsedMs !== undefined && (
                     <span className="tabular-nums text-[11px] text-ink-300">{(m.elapsedMs / 1000).toFixed(1)}s</span>
                   )}
@@ -166,6 +167,19 @@ export default function MessageList({ msgs, onSwitch, onFollowUp }: { msgs: Msg[
                     {tt('⧉ 복사')}
                   </button>
                 </div>
+                {m.gateways && m.gateways.length >= 2 && (
+                  <div data-testid="gateways-used" className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                    <span className="text-[10px] text-ink-400">{tt('사용한 게이트웨이')}</span>
+                    {m.gateways.map((k, gi) => (
+                      <span key={k} className="text-[10.5px] text-ink-500">
+                        {gi > 0 && <span className="mr-1.5 text-ink-300">·</span>}
+                        <span className="rounded border border-ink-100 bg-paper-muted px-1.5 py-0.5 font-mono">
+                          {sectionByKey(k === 'external-obs' ? 'observability' : k)?.label ?? k}
+                        </span>
+                      </span>
+                    ))}
+                  </div>
+                )}
                 {m.tools && m.tools.length > 0 && (
                   <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
                     <span className="text-[10px] text-ink-400">Tools</span>
@@ -198,7 +212,7 @@ export default function MessageList({ msgs, onSwitch, onFollowUp }: { msgs: Msg[
             )}
             {alts.length > 0 && (
               <div className="mt-2">
-                {/* ADR-044: chips are a SECONDARY manual aid (cross-domain is auto-synthesized). */}
+                {/* ADR-003[legacy 044]: chips are a SECONDARY manual aid (cross-domain is auto-synthesized). */}
                 <div className="mb-1 text-[10px] text-ink-400">{tt('다른 도메인으로 더 보기')}</div>
                 <div className="flex flex-wrap gap-1.5">
                 {alts.map((r) => {

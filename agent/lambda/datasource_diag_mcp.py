@@ -105,13 +105,18 @@ def _validate_datasource_url(args):
         return ok({"valid": False, "error": f"URL parse error: {e}"})
 
     scheme = parsed.scheme or ""
-    hostname = parsed.hostname or ""
+    # Match the resolver's IDNA spelling, including Unicode dot equivalents and the root dot.
+    try:
+        hostname = (parsed.hostname or "").encode("idna").decode("ascii").lower().removesuffix(".")
+    except UnicodeError:
+        return ok({"valid": False, "error": "Invalid DNS hostname"})
     port = parsed.port
     path = parsed.path or ""
 
     # Detect NLB DNS pattern / NLB DNS 패턴 감지
-    is_nlb_dns = ".elb." in hostname and ".amazonaws.com" in hostname
-    is_alb_dns = ".elb." in hostname and ".amazonaws.com" in hostname and hostname.startswith("k8s-")
+    is_nlb_dns = ".elb." in hostname and hostname.endswith((".amazonaws.com", ".amazonaws.com.cn"))
+    # Retain the legacy field: this prefix indicates controller naming, not an ALB type proof.
+    is_alb_dns = is_nlb_dns and hostname.startswith("k8s-")
 
     # Check if hostname resolves to private IP / 사설 IP 여부 확인
     is_private_ip = False

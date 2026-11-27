@@ -312,6 +312,7 @@ def build_layer(root, folder):
         subprocess.run([
             sys.executable, "-m", "pip", "install", "--disable-pip-version-check",
             "--no-cache-dir", "--no-compile", "--only-binary=:all:", "--require-hashes",
+            "--python-version", "3.14",
             "--index-url", "https://pypi.org/simple", "-r", str(LOCK), "--target", str(python),
         ], check=True, capture_output=True, timeout=180, env=pip_env)
     except subprocess.TimeoutExpired:

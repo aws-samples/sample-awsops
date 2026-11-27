@@ -290,6 +290,47 @@ export const INVENTORY_TYPES: Record<string, InvType> = {
       { label: 'Tags', keys: ['tags'] },
     ],
     filterKeys: ['region', 'amazon_side_asn', 'dns_support'] },
+  // Network-connection inventory (cross-account network topology inputs). The same record id
+  // can be collected under both accounts of a cross-account link; this page lists each row.
+  transit_gateway_attachment: { label: 'TGW Attachments', group: 'Network', stateKey: 'state', distKey: 'state', columns: [
+    { key: 'transit_gateway_id', label: 'TGW' }, { key: 'attached_resource_type', label: 'Type' },
+    { key: 'attached_resource_id', label: 'Resource' }, { key: 'resource_owner_id', label: 'Resource owner' },
+    { key: 'state', label: 'State' } ],
+    sections: [
+      { label: 'Identity', keys: ['resource_id', 'account_id', 'region', 'creation_time'] },
+      { label: 'Connection', keys: ['transit_gateway_id', 'transit_gateway_owner_id', 'attached_resource_type', 'attached_resource_id', 'resource_owner_id', 'state', 'association_state', 'association_transit_gateway_route_table_id'] },
+      { label: 'Tags', keys: ['tags'] },
+    ],
+    filterKeys: ['region', 'attached_resource_type'] },
+  vpc_peering_connection: { label: 'VPC Peering', group: 'Network', stateKey: 'status_code', distKey: 'status_code', columns: [
+    { key: 'requester_vpc_id', label: 'Requester VPC' }, { key: 'requester_owner_id', label: 'Requester owner' },
+    { key: 'accepter_vpc_id', label: 'Accepter VPC' }, { key: 'accepter_owner_id', label: 'Accepter owner' },
+    { key: 'status_code', label: 'Status' } ],
+    sections: [
+      { label: 'Identity', keys: ['resource_id', 'account_id', 'region', 'expiration_time'] },
+      { label: 'Connection', keys: ['status_code', 'requester_owner_id', 'requester_region', 'requester_vpc_id', 'requester_cidr_block', 'accepter_owner_id', 'accepter_region', 'accepter_vpc_id', 'accepter_cidr_block'] },
+      { label: 'Tags', keys: ['tags'] },
+    ],
+    filterKeys: ['region', 'status_code'] },
+  vpc_endpoint: { label: 'VPC Endpoints', group: 'Network', stateKey: 'state', distKey: 'vpc_endpoint_type', columns: [
+    { key: 'service_name', label: 'Service' }, { key: 'vpc_endpoint_type', label: 'Type' },
+    { key: 'vpc_id', label: 'VPC' }, { key: 'state', label: 'State' } ],
+    sections: [
+      { label: 'Identity', keys: ['resource_id', 'account_id', 'region', 'owner_id', 'creation_timestamp'] },
+      { label: 'Connection', keys: ['service_name', 'vpc_endpoint_type', 'vpc_id', 'state', 'subnet_ids', 'route_table_ids', 'private_dns_enabled', 'requester_managed'] },
+      { label: 'Tags', keys: ['tags'] },
+    ],
+    filterKeys: ['region', 'vpc_endpoint_type', 'vpc_id'] },
+  eni: { label: 'Network Interfaces', group: 'Network', stateKey: 'status', distKey: 'interface_type', columns: [
+    { key: 'interface_type', label: 'Type' }, { key: 'private_ip_address', label: 'Private IP' },
+    { key: 'vpc_id', label: 'VPC' }, { key: 'description', label: 'Description' }, { key: 'status', label: 'Status' } ],
+    sections: [
+      { label: 'Identity', keys: ['resource_id', 'name', 'account_id', 'region', 'interface_type', 'status'] },
+      { label: 'Owner', keys: ['description', 'requester_id', 'requester_managed', 'attached_instance_id'] },
+      { label: 'Network', keys: ['vpc_id', 'subnet_id', 'availability_zone', 'private_ip_address', 'private_ip_addresses', 'groups'] },
+      { label: 'Tags', keys: ['tags'] },
+    ],
+    filterKeys: ['region', 'interface_type', 'vpc_id', 'status'] },
 
   iam_role: { label: 'IAM Roles', group: 'Security', distKey: 'path', columns: [
     { key: 'description', label: 'Description' }, { key: 'create_date', label: 'Created' }, { key: 'path', label: 'Path' },
@@ -527,6 +568,30 @@ export const INVENTORY_TYPES: Record<string, InvType> = {
       { label: 'Tags', keys: ['tags'] },
     ],
     filterKeys: ['region', 'engine_version', 'storage_encrypted'] },
+  rds_cluster: { label: 'RDS Clusters', group: 'Storage & DB', stateKey: 'status', distKey: 'engine', distKey2: 'engine_mode', columns: [
+    { key: 'status', label: 'Status' }, { key: 'engine', label: 'Engine' },
+    { key: 'engine_version', label: 'Version' }, { key: 'endpoint', label: 'Endpoint' },
+    { key: 'multi_az', label: 'Multi-AZ' } ],
+    sections: [
+      { label: 'Identity', keys: ['resource_id', 'account_id', 'region', 'arn', 'create_time'] },
+      { label: 'Engine', keys: ['engine', 'engine_version', 'engine_mode', 'status', 'multi_az', 'deletion_protection', 'members'] },
+      { label: 'Endpoint', keys: ['endpoint', 'reader_endpoint', 'custom_endpoints', 'port'] },
+      { label: 'Security', keys: ['storage_encrypted', 'kms_key_id', 'iam_database_authentication_enabled', 'vpc_security_groups'] },
+      { label: 'Network', keys: ['availability_zones', 'db_subnet_group'] },
+      { label: 'Backup', keys: ['backup_retention_period'] },
+      { label: 'Tags', keys: ['tags'] },
+    ],
+    filterKeys: ['region', 'engine', 'engine_mode', 'storage_encrypted'] },
+  rds_proxy: { label: 'RDS Proxies', group: 'Storage & DB', stateKey: 'status', distKey: 'engine_family', columns: [
+    { key: 'status', label: 'Status' }, { key: 'engine_family', label: 'Engine' },
+    { key: 'endpoint', label: 'Endpoint' }, { key: 'require_tls', label: 'TLS' } ],
+    sections: [
+      { label: 'Identity', keys: ['resource_id', 'account_id', 'region', 'arn', 'created_date', 'updated_date'] },
+      { label: 'Endpoint', keys: ['endpoint', 'engine_family', 'require_tls', 'idle_client_timeout', 'debug_logging'] },
+      { label: 'Network', keys: ['vpc_id', 'vpc_subnet_ids', 'vpc_security_group_ids'] },
+      { label: 'Tags', keys: ['tags'] },
+    ],
+    filterKeys: ['region', 'engine_family', 'require_tls', 'vpc_id'] },
   opensearch_serverless: { label: 'OpenSearch Serverless', group: 'Storage & DB', stateKey: 'status', distKey: 'type', columns: [
     { key: 'type', label: 'Type' }, { key: 'status', label: 'Status' },
     { key: 'collection_endpoint', label: 'Endpoint' }, { key: 'created_date', label: 'Created' } ],
@@ -615,11 +680,11 @@ const GROUPS: Record<string, GroupMeta> = {
   },
   'Storage & DB': {
     slug: 'storage', labelKey: 'group.storage', splitKeys: ['ebsUnencrypted'],
-    order: ['s3', 'ebs_volume', 'ebs_snapshot', 'rds', 'dynamodb', 'elasticache', 'opensearch', 'opensearch_serverless', 'msk', 'neptune_cluster', 'elasticache_replication_group'],
+    order: ['s3', 'ebs_volume', 'ebs_snapshot', 'rds', 'dynamodb', 'elasticache', 'opensearch', 'opensearch_serverless', 'msk', 'neptune_cluster', 'elasticache_replication_group', 'rds_cluster', 'rds_proxy'],
   },
   'Network': {
     slug: 'network', labelKey: 'group.network', splitKeys: ['sgOpenIngress'],
-    order: ['vpc', 'subnet', 'route_table', 'nat_gateway', 'internet_gateway', 'transit_gateway', 'route53', 'cloudfront', 'cloudfront_vpc_origin'],
+    order: ['vpc', 'subnet', 'route_table', 'nat_gateway', 'internet_gateway', 'transit_gateway', 'transit_gateway_attachment', 'vpc_peering_connection', 'vpc_endpoint', 'eni', 'route53', 'cloudfront', 'cloudfront_vpc_origin'],
     // Network Flow Monitor (nfm-dashboard 이식): NFM 온보딩(모니터) 시 플로우 top-contributors 조회.
     injected: [
       { key: 'network-flow', href: '/network-flow', labelKey: 'nav.networkFlow' },

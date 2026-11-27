@@ -191,6 +191,21 @@ class ReadinessTest(unittest.TestCase):
             }
             self.assertEqual(self.run_probe()["reason"], "model_failed")
 
+    def test_sonnet_5_5_probe_turns_thinking_off_within_the_128_token_cap(self):
+        seen = []
+        self.bedrock.converse = lambda **kwargs: seen.append(kwargs) or {
+            "ResponseMetadata": {"HTTPStatusCode": 200}, "stopReason": "end_turn",
+            "output": {"message": {"role": "assistant", "content": [{"text": "READY"}]}},
+        }
+        with patch.object(readiness, "_client", side_effect=lambda service, region, *budget:
+                          self.sts if service == "sts" else self.bedrock):
+            result = readiness.check_readiness(PAYLOAD, GATEWAY, lambda url: self.client,
+                                               "ap-northeast-2", "global.anthropic.claude-sonnet-5-5")
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual(seen[0]["inferenceConfig"], {"maxTokens": 128})
+        self.assertEqual(seen[0]["additionalModelRequestFields"], {"thinking": {"type": "between_tools"}})
+        self.assertEqual(readiness._thinking_off("test-model"), {})
+
     def test_late_model_call_receives_only_the_remaining_sdk_budget(self):
         now = [0.0]
         original_call = self.client.call_tool_sync

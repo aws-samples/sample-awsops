@@ -89,7 +89,8 @@ QUERIES = {
         "vpc_id, db_subnet_group_name, availability_zone, endpoint_address, endpoint_port, "
         "backup_retention_period, preferred_backup_window, latest_restorable_time, vpc_security_groups, "
         "auto_minor_version_upgrade, copy_tags_to_snapshot, deletion_protection, "
-        "iam_database_authentication_enabled, performance_insights_enabled, create_time, tags "
+        "iam_database_authentication_enabled, performance_insights_enabled, create_time, tags, "
+        "read_replica_source_db_instance_identifier, db_cluster_identifier "
         "FROM aws_rds_db_instance ORDER BY db_instance_identifier",
         "db_instance_identifier",
         "region",
@@ -320,6 +321,38 @@ QUERIES = {
         "transit_gateway_id",
         "region",
     ),
+    # Network-connection inventory for the cross-account network topology projection.
+    # aws_ec2_transit_gateway_vpc_attachment returns every attachment visible to the caller —
+    # a TGW owner also sees member-account attachments, so the same attachment id can appear
+    # under two accounts; consumers dedupe by attachment id and never by CIDR.
+    # Attached-resource columns are aliased so they never shadow the row's own resource_id
+    # in the inventory UI.
+    "transit_gateway_attachment": (
+        "SELECT transit_gateway_attachment_id, region, account_id, transit_gateway_id, "
+        "transit_gateway_owner_id, resource_type AS attached_resource_type, "
+        "resource_id AS attached_resource_id, resource_owner_id, state, "
+        "association_state, association_transit_gateway_route_table_id, creation_time, tags "
+        "FROM aws_ec2_transit_gateway_vpc_attachment ORDER BY transit_gateway_attachment_id",
+        "transit_gateway_attachment_id",
+        "region",
+    ),
+    # Both requester and accepter accounts list the same pcx id; dedupe by id downstream.
+    "vpc_peering_connection": (
+        "SELECT id, region, account_id, status_code, requester_owner_id, requester_region, "
+        "requester_vpc_id, requester_cidr_block, accepter_owner_id, accepter_region, "
+        "accepter_vpc_id, accepter_cidr_block, expiration_time, tags "
+        "FROM aws_vpc_peering_connection ORDER BY id",
+        "id",
+        "region",
+    ),
+    "vpc_endpoint": (
+        "SELECT vpc_endpoint_id, region, account_id, vpc_endpoint_type, service_name, vpc_id, "
+        "owner_id, state, subnet_ids, route_table_ids, private_dns_enabled, requester_managed, "
+        "creation_timestamp, tags "
+        "FROM aws_vpc_endpoint ORDER BY vpc_endpoint_id",
+        "vpc_endpoint_id",
+        "region",
+    ),
     "elasticache_replication_group": (
         "SELECT replication_group_id, region, account_id, arn, description, status, "
         "automatic_failover, multi_az, cluster_enabled, cache_node_type, "
@@ -439,6 +472,50 @@ QUERIES = {
         "FROM aws_ebs_snapshot WHERE owner_id IN ({owner_ids}) "
         "ORDER BY start_time DESC",
         "snapshot_id",
+        "region",
+    ),
+    # Topology discovery: every private IPv4 address belongs to one ENI, so a load-balancer IP
+    # target resolves to its owning resource (ELB, Lambda, RDS, VPC endpoint, NAT, EC2) from
+    # configuration alone. IPv6 and public addresses (association_* columns and the nested
+    # Association in private_ip_addresses) are not collected, so IPv6 and public-IP targets stay
+    # unresolved. Columns verified present in the pinned plugin
+    # aws@0.142.0 (table_aws_ec2_network_interface.go). Sizing: measured 2026-11-11 at about
+    # 470-520 ENIs per account in ap-northeast-2 and 41 in us-east-1 for the dev host and the
+    # largest member; rows are written one round trip each inside the 120 s Aurora reserve.
+    "eni": (
+        "SELECT network_interface_id, region, account_id, interface_type, description, status, "
+        "requester_id, requester_managed, attached_instance_id, vpc_id, subnet_id, "
+        "availability_zone, private_ip_address, groups, tags, (tags ->> 'Name') AS name, "
+        # Each private_ip_addresses element nests an Association (public IP, public DNS, IP owner):
+        # project only the private address and its primary flag so no public data is stored.
+        "(SELECT jsonb_agg(jsonb_build_object('PrivateIpAddress', a ->> 'PrivateIpAddress', "
+        "'Primary', a -> 'Primary') ORDER BY ord) "
+        "FROM jsonb_array_elements(private_ip_addresses) WITH ORDINALITY AS p(a, ord)) "
+        "AS private_ip_addresses "
+        "FROM aws_ec2_network_interface ORDER BY network_interface_id",
+        "network_interface_id",
+        "region",
+    ),
+    # Aurora/RDS clusters: writer/reader/custom endpoints let trace DB hosts bind to the cluster.
+    # Columns verified present in the pinned plugin aws@0.142.0 (table_aws_rds_db_cluster.go).
+    "rds_cluster": (
+        "SELECT db_cluster_identifier, region, account_id, arn, status, engine, engine_version, "
+        "engine_mode, endpoint, reader_endpoint, custom_endpoints, port, members, multi_az, "
+        "storage_encrypted, kms_key_id, deletion_protection, iam_database_authentication_enabled, "
+        "backup_retention_period, db_subnet_group, vpc_security_groups, availability_zones, "
+        "create_time, tags, (tags ->> 'Name') AS name "
+        "FROM aws_rds_db_cluster ORDER BY db_cluster_identifier",
+        "db_cluster_identifier",
+        "region",
+    ),
+    # RDS Proxy endpoint is the host applications dial. `auth` (secret ARNs) is not collected.
+    # Columns verified present in the pinned plugin aws@0.142.0 (table_aws_rds_db_proxy.go).
+    "rds_proxy": (
+        "SELECT db_proxy_name, region, account_id, db_proxy_arn AS arn, status, engine_family, "
+        "endpoint, require_tls, idle_client_timeout, debug_logging, vpc_id, vpc_subnet_ids, "
+        "vpc_security_group_ids, created_date, updated_date, tags, (tags ->> 'Name') AS name "
+        "FROM aws_rds_db_proxy ORDER BY db_proxy_name",
+        "db_proxy_name",
         "region",
     ),
 }
@@ -680,6 +757,42 @@ def _fetch_alb_listener_rules():
     return _sdk_collection(rows, "resource_id", "region", failures)
 
 
+def _list_s3_buckets(s3):
+    """Finish bounded enumeration before publishing any bucket evidence."""
+    buckets, names, tokens, token = [], set(), set(), None
+    for _ in range(100):
+        args = {"MaxBuckets": 1000}
+        if token is not None:
+            args["ContinuationToken"] = token
+        response = s3.list_buckets(**args)
+        page = response.get("Buckets")
+        if not isinstance(page, list):
+            raise RuntimeError("Incomplete S3 bucket listing")
+        for bucket in page:
+            name = bucket.get("Name") if isinstance(bucket, dict) else None
+            if not isinstance(name, str) or not name or name in names:
+                raise RuntimeError("Invalid S3 bucket listing identity")
+            names.add(name)
+            buckets.append(bucket)
+        token = response.get("ContinuationToken")
+        if token is None:
+            return buckets
+        if not isinstance(token, str) or not token or token in tokens:
+            raise RuntimeError("Incomplete S3 bucket listing pagination")
+        tokens.add(token)
+    raise RuntimeError("S3 bucket listing exceeded page limit")
+
+
+def _s3_bucket_region(s3, bucket):
+    # Paginated ListBuckets supplies BucketRegion under ListAllMyBuckets. A
+    # bucket-policy deny on GetBucketLocation must not discard that evidence.
+    region = bucket.get("BucketRegion")
+    if isinstance(region, str) and re.fullmatch(r"[a-z]{2,8}(?:-[a-z0-9]+)+-\d+", region):
+        return region
+    location = s3.get_bucket_location(Bucket=bucket["Name"]).get("LocationConstraint")
+    return "eu-west-1" if location == "EU" else location or "us-east-1"
+
+
 def _fetch_s3_public_access(s3=None):
     """Per-bucket S3 public-access flags (denial-safe), for the /security Public-S3 finding.
     Steampipe's aws_s3_bucket public-access columns trigger per-bucket GetBucketPolicyStatus/
@@ -694,13 +807,12 @@ def _fetch_s3_public_access(s3=None):
     rows = []
     failures = []
     unknown_attrs = 0
-    for b in s3.list_buckets().get("Buckets", []) or []:
+    for b in _list_s3_buckets(s3):
         name = b["Name"]
         transient_failed = False
         denied_attrs = []
         try:
-            loc = s3.get_bucket_location(Bucket=name).get("LocationConstraint")
-            region = loc or "us-east-1"  # null LocationConstraint => us-east-1
+            region = _s3_bucket_region(s3, b)
         except ClientError as e:
             # Never upsert under region "" — that lands a NEW row under a different
             # conflict key while the partial run skips both prune phases, leaving the
@@ -785,13 +897,12 @@ def _fetch_s3_security(s3=None):
     rows = []
     failures = []
     unknown_attrs = 0
-    for b in s3.list_buckets().get("Buckets", []) or []:
+    for b in _list_s3_buckets(s3):
         name = b["Name"]
         transient_failed = False
         denied_attrs = []
         try:
-            loc = s3.get_bucket_location(Bucket=name).get("LocationConstraint")
-            region = loc or "us-east-1"
+            region = _s3_bucket_region(s3, b)
         except ClientError as e:
             # Never upsert under region "" — that lands a NEW row under a different
             # conflict key while the partial run skips both prune phases, leaving the
