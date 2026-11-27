@@ -9,7 +9,7 @@ description: SRE/architect deep-dive Q&A on AWSops internals (edge, async worker
 An in-depth technical FAQ about how AWSops works internally. Written for SREs and architects, covering the edge path, the async worker backbone, the data layer, AI routing, auth, and operational learnings.
 
 :::info Read-only ops dashboard
-AWSops is a **read-only operations dashboard + AI diagnosis** tool. **AWS-resource mutation and autonomy are permanently frozen.** External observability reads and governed external record/ticket/message writes (data records) are allowed, but none of them change AWS resources themselves.
+AWSops is a **read-only operations dashboard + AI diagnosis** tool. **AWS-resource mutation and autonomy are frozen**, apart from two owner-approved, default-off operations (restarting its own web service and registering connector targets on its own AgentCore gateway). External observability reads and governed external record/ticket/message writes (data records) are allowed, but none of them change AWS resources themselves.
 :::
 
 ## How is the edge (CloudFront → VPC Origin → internal ALB → Fargate) wired?

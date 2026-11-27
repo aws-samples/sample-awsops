@@ -30,7 +30,7 @@ AWSops 的数据源是**只读连接器平台**。它是与 AWS 资源查询（A
 | ClickHouse | SQL | 分析型数据库 |
 
 :::info 只读姿态
-数据源仅处理**数据 read**（+ 受治理的外部 record/ticket/message write）。AWS 资源变更·自主行为已永久冻结（do-not-enable）。`web/app/api/datasources/query/route.ts` 的工具映射中**只存在读取工具**（mutate 工具不可达），并有测试验证该不变式。
+数据源仅处理**数据 read**（+ 受治理的外部 record/ticket/message write）。AWS 资源变更·自主行为已冻结（do-not-enable）。与数据源相关的唯一例外是默认关闭的 `connector_target_sync_enabled`：启用后，添加数据源会在本栈自身的 AgentCore 网关上创建或更新该连接器的一个目标（不删除目标，也不管理网关）。`web/app/api/datasources/query/route.ts` 的工具映射中**只存在读取工具**（mutate 工具不可达），并有测试验证该不变式。
 :::
 
 ## 如何添加新的数据源类型（例如 Elasticsearch、InfluxDB）？

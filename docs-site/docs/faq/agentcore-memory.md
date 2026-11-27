@@ -27,7 +27,7 @@ flowchart LR
 | **라이브 조회** | AgentCore MCP Lambda 도구(약 160개, 읽기 전용)가 boto3로 AWS API를 직접 호출 |
 | **Steampipe의 역할** | 라이브 쿼리 엔진이 **아님**. `steampipe_enabled` 플래그로만 켜지는 **인벤토리 sync**(기본 OFF)일 뿐 — 로컬 9193 서비스/pg Pool 없음 |
 | **게이트** | AgentCore 전체는 `agentcore_enabled` Terraform 플래그로 게이트(기본 OFF → `plan` = No changes, $0) |
-| **읽기 전용** | 모든 도구는 read-only이며, AWS 리소스 변경과 자율 실행은 영구 동결 |
+| **읽기 전용** | 모든 도구는 read-only이며, AWS 리소스 변경과 자율 실행은 동결 |
 
 :::info Steampipe는 더 이상 라이브 엔진이 아닙니다
 라이브 AWS 상태는 항상 AgentCore 도구가 답합니다. Steampipe는 켜질 경우 Fargate에서 워밍업되어 인벤토리를 Aurora로 sync하는 보조 경로일 뿐이며, 기본값은 비활성입니다.

@@ -137,5 +137,5 @@ External record/ticket/message writes are an optional feature governed by policy
 3. **Credentials** — External service tokens/webhooks are stored in Secrets Manager. An expired or mistyped value makes the send fail.
 
 :::info
-An external write is the creation of a **data record (message/ticket)**, not an AWS-resource change. AWS-resource mutation and autonomous execution remain permanently frozen.
+An external write is the creation of a **data record (message/ticket)**, not an AWS-resource change. AWS-resource mutation and autonomous execution remain frozen.
 :::

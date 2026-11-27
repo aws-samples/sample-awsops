@@ -30,7 +30,7 @@ Currently queryable kinds:
 | ClickHouse | SQL | Analytics DB |
 
 :::info Read-only posture
-Datasources cover **data reads** (plus governed external record/ticket/message writes) only. AWS-resource mutation and autonomy are permanently frozen (do-not-enable). The tool map in `web/app/api/datasources/query/route.ts` holds **read tools only** (no mutate tool is reachable), and a test asserts this invariant.
+Datasources cover **data reads** (plus governed external record/ticket/message writes) only. AWS-resource mutation and autonomy are frozen (do-not-enable). The one datasource-related exception is the default-off `connector_target_sync_enabled` flag: when it is on, adding a datasource creates or updates that connector's one target on the stack's own AgentCore gateway (no delete or gateway management). The tool map in `web/app/api/datasources/query/route.ts` holds **read tools only** (no mutate tool is reachable), and a test asserts this invariant.
 :::
 
 ## How do I add a new datasource type (e.g., Elasticsearch, InfluxDB)?

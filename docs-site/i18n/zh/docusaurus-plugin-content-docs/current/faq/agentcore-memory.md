@@ -27,7 +27,7 @@ flowchart LR
 | **实时查询** | AgentCore MCP Lambda 工具（约 160 个，只读）用 boto3 直接调用 AWS API |
 | **Steampipe 的角色** | **不是**实时查询引擎。仅是通过 `steampipe_enabled` 标志开启的**清单同步**（默认 OFF）— 没有本地 9193 服务/pg Pool |
 | **门禁** | AgentCore 整体由 `agentcore_enabled` Terraform 标志控制（默认 OFF → `plan` = No changes，$0） |
-| **只读** | 所有工具都是 read-only，AWS 资源变更与自主执行永久冻结 |
+| **只读** | 所有工具都是 read-only，AWS 资源变更与自主执行已冻结 |
 
 :::info Steampipe 不再是实时引擎
 实时 AWS 状态始终由 AgentCore 工具回答。Steampipe 若被开启，只是一条在 Fargate 中预热后将清单同步到 Aurora 的辅助路径，默认为禁用。

@@ -30,7 +30,7 @@ AWSops のデータソースは**読み取り専用コネクタプラットフ�
 | ClickHouse | SQL | 分析 DB |
 
 :::info 読み取り専用姿勢
-データソースは**データ read**(+ ガバナンスされた外部 record/ticket/message write)のみを扱います。AWS リソースの変更・自律動作は恒久凍結(do-not-enable)です。`web/app/api/datasources/query/route.ts` のツールマップには**読み取りツールのみ**が存在し(mutate ツールには到達不可)、テストがこの不変条件を検証します。
+データソースは**データ read**(+ ガバナンスされた外部 record/ticket/message write)のみを扱います。AWS リソースの変更・自律動作は凍結(do-not-enable)です。データソースに関わる例外は一つだけで、既定で無効の `connector_target_sync_enabled` を有効にすると、データソースの追加時に自身の AgentCore ゲートウェイで該当コネクタのターゲットを一つ作成または更新します(削除やゲートウェイ管理は行いません)。`web/app/api/datasources/query/route.ts` のツールマップには**読み取りツールのみ**が存在し(mutate ツールには到達不可)、テストがこの不変条件を検証します。
 :::
 
 ## 新しいデータソースタイプ(例: Elasticsearch、InfluxDB)を追加するには?
