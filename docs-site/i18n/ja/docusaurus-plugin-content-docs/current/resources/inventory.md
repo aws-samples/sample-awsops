@@ -52,7 +52,7 @@ import Screenshot from '@site/src/components/Screenshot';
 :::
 
 :::info 読み取り専用の収集
-**Refresh** は最新の状態を再読み込みするだけで、リソースは変更しません。AWSops は AWS リソースの観察・診断のみを行い、いかなる変更も加えません。収集時刻は KST（Asia/Seoul）基準で表示されます。
+**Refresh** は最新の状態を再読み込みするだけで、リソースは変更しません。インベントリ収集は AWS リソースを観察するだけで、いかなる変更も加えません。収集時刻は KST（Asia/Seoul）基準で表示されます。
 :::
 
 :::tip モバイル
