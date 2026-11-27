@@ -58,7 +58,7 @@
         <mxCell id="agentcore-title" value="Bedrock AgentCore diagnosis plane" style="text;html=1;align=right;verticalAlign=middle;fontFamily=Amazon Ember;fontSize=11;fontStyle=1;fontColor=#116D5B;strokeColor=none;fillColor=none;" parent="agentcore-band" vertex="1">
           <mxGeometry x="250" y="5" width="250" height="20" as="geometry"/>
         </mxCell>
-        <mxCell id="agentcore-runtime" value="AgentCore Runtime&#10;GPT-6 Luna" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#4AB29A;gradientDirection=north;fillColor=#116D5B;strokeColor=#FFFFFF;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontFamily=Amazon Ember;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;" parent="agentcore-band" vertex="1">
+        <mxCell id="agentcore-runtime" value="AgentCore Runtime&#10;Sonnet 5" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=#4AB29A;gradientDirection=north;fillColor=#116D5B;strokeColor=#FFFFFF;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontFamily=Amazon Ember;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.bedrock;" parent="agentcore-band" vertex="1">
           <mxGeometry x="30" y="80" width="48" height="48" as="geometry"/>
         </mxCell>
         <mxCell id="agentcore-services" value="Attached services" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4AB29A;verticalAlign=top;align=left;spacingLeft=8;spacingTop=5;fontFamily=Amazon Ember;fontSize=9;fontStyle=1;fontColor=#116D5B;" parent="agentcore-band" vertex="1">
